@@ -1,19 +1,17 @@
 # Backend service
 Backend for the school project
 
-MQTT-Broker/Backend Server: **192.168.1.11:1883** 
-Station 1 - xxxxxxxxxxxxxx: **192.168.1.21**
-Station 2 - xxxxxxxxxxxxxx: **192.168.1.22**
-Station 3 - xxxxxxxxxxxxxx: **192.168.1.23**
-Station 4 - xxxxxxxxxxxxxx: **192.168.1.24**
-Station 5 - xxxxxxxxxxxxxx: **192.168.1.25**
+MQTT-Broker/Backend Server: **192.168.1.11:1883** <br>
+Station 1 - xxxxxxxxxxxxxx: **192.168.1.21**<br>
+Station 2 - xxxxxxxxxxxxxx: **192.168.1.22**<br>
+Station 3 - xxxxxxxxxxxxxx: **192.168.1.23**<br>
+Station 4 - xxxxxxxxxxxxxx: **192.168.1.24**<br>
+Station 5 - xxxxxxxxxxxxxx: **192.168.1.25**<br>
 
-Dashboard: Grafana
-Database: PostgreSQL (Time series database for grafana)
-Backend Service: Python (handles events & database handling)
+Dashboard: Grafana<br>
+Database: PostgreSQL (Time series database for grafana)<br>
+Backend Service: Python (handles events & database handling)<br>
 MQTT-broker: mosquitto
-
-
 
 
 ```mermaid

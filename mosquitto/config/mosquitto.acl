@@ -1,0 +1,12 @@
+pattern readwrite station/%c
+
+# Station topic permissions
+topic readwrite station/started
+topic readwrite station/completed
+topic readwrite station/error
+topic readwrite station/review
+
+# Temporary topics
+topic readwrite station/temp1
+topic readwrite station/temp2
+topic readwrite station/temp3

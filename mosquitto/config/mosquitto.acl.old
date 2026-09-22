@@ -1,0 +1,101 @@
+user station
+
+# ----------------------------
+# STATION 1
+# ----------------------------
+topic readwrite station/1/start
+topic readwrite station/1/complete
+topic readwrite station/1/review
+topic readwrite station/1/timestamp
+
+# BACKEND
+topic readwrite backend/1/start
+topic readwrite backend/1/complete
+topic readwrite backend/1/review
+topic readwrite backend/1/timestamp
+
+# ----------------------------
+# STATION 2
+# ----------------------------
+topic readwrite station/2/start
+topic readwrite station/2/complete
+topic readwrite station/2/review
+topic readwrite station/2/timestamp
+
+# BACKEND
+topic readwrite backend/2/start
+topic readwrite backend/2/complete
+topic readwrite backend/2/review
+topic readwrite backend/2/timestamp
+
+# ----------------------------
+# STATION 3
+# ----------------------------
+topic readwrite station/3/start
+topic readwrite station/3/complete
+topic readwrite station/3/review
+topic readwrite station/3/timestamp
+
+# BACKEND
+topic readwrite backend/3/start
+topic readwrite backend/3/complete
+topic readwrite backend/3/review
+topic readwrite backend/3/timestamp
+
+# ----------------------------
+# STATION 4
+# ----------------------------
+topic readwrite station/4/start
+topic readwrite station/4/complete
+topic readwrite station/4/review
+topic readwrite station/4/timestamp
+
+# BACKEND
+topic readwrite backend/4/start
+topic readwrite backend/4/complete
+topic readwrite backend/4/review
+topic readwrite backend/4/timestamp
+
+# ----------------------------
+# STATION 5
+# ----------------------------
+topic readwrite station/5/start
+topic readwrite station/5/complete
+topic readwrite station/5/review
+topic readwrite station/5/timestamp
+
+# BACKEND
+topic readwrite backend/5/start
+topic readwrite backend/5/complete
+topic readwrite backend/5/review
+topic readwrite backend/5/timestamp
+
+
+
+
+
+
+# ----------------------------
+# OLD TOPICS
+# ----------------------------
+topic readwrite station/start
+topic readwrite station/complete
+topic readwrite station/review
+topic readwrite station/timestamp
+
+# BACKEND TOPICS
+topic readwrite backend/start
+topic readwrite backend/complete
+topic readwrite backend/review
+topic readwrite backend/timestamp
+
+# Temporary topics
+topic readwrite station/temp1
+topic readwrite station/temp2
+topic readwrite station/temp3
+
+
+
+
+
+

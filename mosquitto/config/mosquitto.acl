@@ -1,12 +1,15 @@
-pattern readwrite station/%c
+# --- 1. BACKEND USER ---
+# Darf alle Station-Topics lesen/schreiben und das Backend-Topic verwalten
+user backend
+topic readwrite backend/#
+topic readwrite station/#
 
-# Station topic permissions
-topic readwrite station/started
-topic readwrite station/completed
-topic readwrite station/error
-topic readwrite station/review
 
-# Temporary topics
-topic readwrite station/temp1
-topic readwrite station/temp2
-topic readwrite station/temp3
+# --- 2. REGELN FÜR ALLE STATIONEN (Dynamisch via Username %u) ---
+# Jeder Stations-User (z. B. Username "5" oder "station-01") bekommt 
+# automatisch NUR Zugriff auf seine eigenen Unter-Topics:
+pattern write station/%u/start
+pattern write station/%u/complete
+pattern write station/%u/review
+pattern readwrite station/%u/timestamp
+pattern read backend/timestamp

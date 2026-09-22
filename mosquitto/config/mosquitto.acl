@@ -11,5 +11,4 @@ topic readwrite station/#
 pattern write station/%u/start
 pattern write station/%u/complete
 pattern write station/%u/review
-pattern readwrite station/%u/timestamp
-pattern read backend/timestamp
+pattern readwrite station/%u/servertime

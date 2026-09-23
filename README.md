@@ -70,3 +70,59 @@ TLS/SSL:     disable
 <br>
 After that import the test dashboard (or any other from us) <br>
 (you may have to click on every panel and click 'run query' once for it to show default data) <br>
+
+
+
+# Flowchart for one Station
+
+```mermaid  
+flowchart TD
+    A["L&R Login"] --> B["station/x/login<br/>{ Tag_UID: '1A 2B 3C 4D' }"]
+
+    B --> C{"Login möglich?<br/>Station online<br/>AND state = free<br/>AND groupId = null"}
+
+    C -->|Nein| D["Login abgelehnt"]
+    C -->|Ja| E["Backend legt Zuordnung fest<br/>stationId = x<br/>userId = 1<br/>state = waiting<br/>groupId = 1"]
+
+    E --> F["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'waiting',<br/>groupId: '1'<br/>}"]
+
+    F --> G["Nutzer startet Spiel"]
+    G --> H["station/x/start<br/>{ groupId: '1' }"]
+
+    H --> I{"Start möglich?<br/>state = waiting"}
+
+    I -->|Nein| J["Start abgelehnt"]
+    I -->|Ja| K["Status wird auf playing gesetzt"]
+
+    K --> L["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'playing',<br/>groupId: '1'<br/>}"]
+
+    L --> M["L&R weiß:<br/>Station x läuft mit User/Gruppe 1"]
+
+    M --> N["Spiel wird beendet"]
+    N --> O["station/x/complete<br/>{ groupId: '1' }"]
+
+    O --> P["Backend setzt Status auf completed"]
+
+    P --> Q["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'completed',<br/>groupId: '1'<br/>}"]
+
+    Q --> R["L&R zeigt Review an"]
+    R --> S["Gruppe gibt Bewertung ab"]
+
+    S --> T["station/x/review<br/>{<br/>groupId: '1',<br/>rating: 0<br/>}"]
+
+    T --> U["Backend speichert Review in DB"]
+    U --> V["Backend setzt Station auf free"]
+
+    V --> W["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'free',<br/>groupId: null<br/>}"]
+
+    W --> X["Station wieder verfügbar"]
+
+    style F fill:#fff3cd
+    style L fill:#cfe2ff
+    style Q fill:#d1e7dd
+    style W fill:#d1e7dd
+
+    style D fill:#f8d7da
+    style J fill:#f8d7da
+
+```

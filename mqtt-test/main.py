@@ -4,7 +4,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
 # --- Network & Credentials ---
-BROKER_IP = "127.0.0.1"  # Raspberry Pi IP (or "127.0.0.1" for local testing)
+BROKER_IP = "127.0.0.1"  # Raspberry Pi IP (or "192.168.1.11" for local testing)
 PORT = 1883
 TOPIC = "station/#"
 
@@ -84,7 +84,8 @@ def on_message(client, userdata, msg):
     raw_station_id, action = parts[1], parts[2]
 
     try:
-        station_id = int(raw_station_id)
+        clean_id = raw_station_id.replace("station", "")
+        station_id = int(clean_id)
     except ValueError:
         return
 
@@ -120,7 +121,7 @@ def on_message(client, userdata, msg):
         client.publish("backend/timestamp", routing_payload)
 
 
-# Initialize DB Schema on Startup
+# inititalize db on startup
 init_db()
 
 # Setup MQTT Client

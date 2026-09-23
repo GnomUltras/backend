@@ -5,10 +5,10 @@ from paho.mqtt.enums import CallbackAPIVersion
 # --- Konfiguration ---
 BROKER_IP = "127.0.0.1"
 PORT = 1883
-STATION_ID = 1
+STATION_ID = "station01"
 TOPIC = f"station/{STATION_ID}/servertime"
 
-# Benutzername muss zur ACL passen (z. B. "1" oder "station-01")
+# Username must fit to the ACL (z. B. "station-01")
 MQTT_USER = str(STATION_ID)
 MQTT_PASS = "testen123"
 
@@ -17,10 +17,10 @@ def on_connect(client, userdata, flags, reason_code, properties):
     if reason_code == 0:
         print(f"[STATION {STATION_ID}] Verbunden mit Broker.", flush=True)
 
-        # 1. Topic abonnieren, um die Antwort des Backends zu empfangen
+        # subscribe to topic to get repsonse from backend
         client.subscribe(TOPIC, qos=1)
 
-        # 2. GET-Anfrage senden
+        # send GET request
         request_payload = {"request": "GET"}
         print(f"[STATION {STATION_ID}] Sende GET-Anfrage an [{TOPIC}]...", flush=True)
         client.publish(TOPIC, json.dumps(request_payload), qos=1)
@@ -34,7 +34,7 @@ def on_message(client, userdata, msg):
     except json.JSONDecodeError:
         return
 
-    # Nur verarbeiten, wenn es sich um die Antwort (POST) handelt
+    # only process when response type is POST
     if payload.get("request") == "POST":
         print("\n=====================================", flush=True)
         print("  SERVERTIME ANTWORT EMPFANGEN", flush=True)
@@ -44,7 +44,6 @@ def on_message(client, userdata, msg):
         print(f"Unix Epoche : {payload.get('unix')}", flush=True)
         print("=====================================\n", flush=True)
 
-        # Nach Erhalt der Antwort Beenden
         client.disconnect()
 
 

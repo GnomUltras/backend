@@ -37,8 +37,7 @@ def on_message(client, userdata, msg):
         return
 
     raw_station_id, action = parts[1], parts[2]
-    # Ignore status replies so the controller does not respond to itself.
-    if action not in ("login", "start", "complete", "review"):
+    if action not in ("login", "start", "complete", "review", "status"):
         return
 
     try:
@@ -50,6 +49,13 @@ def on_message(client, userdata, msg):
         return
 
     current_state = station_states[station_id]
+    # Status queries are read-only and independent of the allowed next action.
+    if action == "status":
+        if msg.payload.strip() == b"1":
+            send_status(client, raw_station_id, current_state["team_id"], current_state["status"])
+        # JSON replies on this same topic must not trigger another reply.
+        return
+
     # Ignore duplicates and out-of-order requests before processing their payload.
     if action != NEXT_ACTION.get(current_state["status"]):
         return

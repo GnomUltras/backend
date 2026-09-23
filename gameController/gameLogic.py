@@ -28,7 +28,11 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 def send_status(client, station_id, team_id, status):
     payload = {"status": status, "team_id": team_id}
-    client.publish(f"station/{station_id}/status", json.dumps(payload), qos=1, retain=False)
+    result = client.publish(f"station/{station_id}/status", json.dumps(payload), qos=1, retain=False)
+    if result.rc == 0:
+        print(f"[STATUS RESPONSE] Sent to {station_id}: {json.dumps(payload)}", flush=True)
+    else:
+        print(f"[STATUS ERROR] Could not send response to {station_id}: {result.rc}", flush=True)
 
 
 def on_message(client, userdata, msg):
@@ -52,6 +56,7 @@ def on_message(client, userdata, msg):
     # Status queries are read-only and independent of the allowed next action.
     if action == "status":
         if msg.payload.strip() == b"1":
+            print(f"[STATUS REQUEST] Received from {raw_station_id} on {msg.topic}", flush=True)
             send_status(client, raw_station_id, current_state["team_id"], current_state["status"])
         # JSON replies on this same topic must not trigger another reply.
         return

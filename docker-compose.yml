@@ -63,11 +63,11 @@ services:
       mosquitto:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+psycopg2://stationuser:changeme@postgres:5432/stations
+      DATABASE_URL: postgresql+psycopg2://stationuser:@postgres:5432/stations
       MQTT_HOST: mosquitto
       MQTT_PORT: 1883
     volumes:
-      - ./backend:/app
+      - ./:/app
     networks:
       - stack
 

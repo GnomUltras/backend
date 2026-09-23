@@ -36,16 +36,22 @@ def upgrade() -> None:
         "station",
         sa.Column("station_id", sa.Integer(), primary_key=True, autoincrement=True),
         sa.Column("name", sa.String(length=255), nullable=False),
-        sa.Column("status", sa.String(length=50), nullable=True),
     )
 
     op.create_table(
         "results",
         sa.Column("team_id", sa.Integer(), nullable=False),
         sa.Column("station_id", sa.Integer(), nullable=False),
+        sa.Column(
+            "created_at",
+            sa.DateTime(timezone=True),
+            nullable=False,
+            server_default=sa.text("now()"),
+        ),
         sa.Column("start_time", sa.DateTime(timezone=True), nullable=True),
         sa.Column("end_time", sa.DateTime(timezone=True), nullable=True),
         sa.Column("review", sa.Text(), nullable=True),
+        sa.Column("status", sa.String(length=50), nullable=True),
         sa.PrimaryKeyConstraint("team_id", "station_id", name="pk_results"),
         sa.ForeignKeyConstraint(
             ["team_id"], ["team.id"], name="fk_results_team_id", ondelete="CASCADE"

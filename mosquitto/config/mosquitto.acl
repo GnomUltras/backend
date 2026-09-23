@@ -1,16 +1,21 @@
-# --- 1. BACKEND USER ---
-# Darf alle Station-Topics lesen/schreiben und das Backend-Topic verwalten
+# Game Controller and separate time service.
 user backend
-topic readwrite backend/#
-topic readwrite station/#
+topic read station/+/login
+topic read station/+/start
+topic read station/+/complete
+topic read station/+/review
+topic readwrite station/+/status
+topic readwrite station/+/servertime
 
 
-# --- 2. REGELN FÜR ALLE STATIONEN (Dynamisch via Username %u) ---
-# Jeder Stations-User (z. B. Username "5" oder "station-01") bekommt 
-# automatisch NUR Zugriff auf seine eigenen Unter-Topics:
+# Each station uses its MQTT username (station01 to station05) in the topic.
 pattern write station/%u/login
 pattern write station/%u/start
 pattern write station/%u/complete
 pattern write station/%u/review
-pattern readwrite station/%u/servertime
+
+# Status queries and replies share the same topic.
 pattern readwrite station/%u/status
+
+# Keep the separate station time service available.
+pattern readwrite station/%u/servertime

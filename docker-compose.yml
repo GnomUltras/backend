@@ -1,19 +1,16 @@
 services:
 
   mosquitto:
-    image: eclipse-mosquitto:2
+    build: ./mosquitto       # uses the Dockerfile to use the volumes etc with correct rights and ownership
     container_name: mosquitto
     restart: unless-stopped
     ports:
-      - "1883:1883"   # MQTT
-      - "9001:9001"   # MQTT over WebSockets (optional, handy for debugging)
+      - "1883:1883"
     volumes:
-      - ./mosquitto/config:/mosquitto/config
-      - ./mosquitto/data:/mosquitto/data
-      - ./mosquitto/log:/mosquitto/log
+      - mosquitto-data:/mosquitto/data
+      - mosquitto-log:/mosquitto/log
     networks:
       - stack
-
 
   postgres:
     image: postgres:16
@@ -62,5 +59,7 @@ networks:
     driver: bridge
 
 volumes:
+  mosquitto-data:
+  mosquitto-log:
   postgres-data:
   grafana-data:

@@ -53,3 +53,20 @@ flowchart TD
     GF -- "SQL (SELECT)" --> DB
     Client -- "HTTP (Port 3000)" --> GF
 ```
+
+
+# grafana
+
+## datasource setup
+- Grafana website -> http://localhost:3000/ <br>
+- Connections -> Add new Datasource <br>
+```
+Host URL:   'postgres:5432'
+DB name:    'stations'
+Username:   'stationuser'
+Password:   'changeme'
+TLS/SSL:     disable
+```
+<br>
+After that import the test dashboard (or any other from us) <br>
+(you may have to click on every panel and click 'run query' once for it to show default data) <br>

@@ -8,7 +8,9 @@ topic readwrite station/#
 # --- 2. REGELN FÜR ALLE STATIONEN (Dynamisch via Username %u) ---
 # Jeder Stations-User (z. B. Username "5" oder "station-01") bekommt 
 # automatisch NUR Zugriff auf seine eigenen Unter-Topics:
+pattern write station/%u/login
 pattern write station/%u/start
 pattern write station/%u/complete
 pattern write station/%u/review
 pattern readwrite station/%u/servertime
+pattern readwrite station/%u/status

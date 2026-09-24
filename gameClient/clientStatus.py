@@ -8,8 +8,8 @@ import paho.mqtt.client as mqtt
 
 
 # Local script / local Docker: "localhost"; Docker on the Pi: "192.168.1.11"
-# MQTT_HOST = "localhost"
-MQTT_HOST = "192.168.1.11"
+MQTT_HOST = "localhost"
+# MQTT_HOST = "192.168.1.11"
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "testen123")
 STATION_ID = os.getenv("STATION_ID", "station01")

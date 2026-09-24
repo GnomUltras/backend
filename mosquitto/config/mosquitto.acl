@@ -4,7 +4,8 @@ topic read station/+/login
 topic read station/+/start
 topic read station/+/complete
 topic read station/+/review
-topic write station/%u/nextStation # next station is send automatically after the review is done and when we send that we set the state to idle
+# Send the next destination to the station that submitted the review.
+topic write station/+/nextStation
 topic readwrite station/+/status
 topic readwrite station/+/servertime
 

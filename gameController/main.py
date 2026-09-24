@@ -3,7 +3,7 @@ from paho.mqtt.enums import CallbackAPIVersion
 
 import config
 from db import init_db
-from gameLogic import on_connect, on_message
+from gameLogic import on_connect, on_message, on_publish
 
 
 def main():
@@ -14,6 +14,7 @@ def main():
     client.username_pw_set(config.MQTT_USER, config.MQTT_PASSWORD)
     client.on_connect = on_connect
     client.on_message = on_message
+    client.on_publish = on_publish
 
     try:
         client.connect(config.MQTT_HOST, config.MQTT_PORT, config.MQTT_KEEPALIVE)

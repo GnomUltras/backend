@@ -6,8 +6,8 @@ import paho.mqtt.client as mqtt
 
 
 # Local script / local Docker: "localhost"; Docker on the Pi: "192.168.1.11"
-# MQTT_HOST = "localhost"
-MQTT_HOST = "192.168.1.11"
+MQTT_HOST = "localhost"
+# MQTT_HOST = "192.168.1.11"
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "testen123")
 STATION_ID = os.getenv("STATION_ID", "station01")
@@ -23,6 +23,7 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
 
     topic = f"station/{station_id}/{action}"
     status_topic = f"station/{station_id}/status"
+    next_station_topic = f"station/{station_id}/nextStation"
     payload = nfc_uuid.strip()
     if action == "review":
         if type(review_score) is not int or review_score not in (0, 1, 2):
@@ -30,17 +31,21 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
         payload = f"{payload};{review_score}"
     finished = Event()
     response = None
+    next_station = None
 
     def on_connect(client, userdata, flags, reason_code, properties):
         if reason_code != 0:
             print(f"[ERROR] Connection failed: {reason_code}", flush=True)
             finished.set()
             return
-        client.subscribe(status_topic, qos=1)
+        topics = [(status_topic, 1)]
+        if action == "review":
+            topics.append((next_station_topic, 1))
+        client.subscribe(topics)
 
     def on_subscribe(client, userdata, mid, reason_codes, properties):
         if any(code.is_failure for code in reason_codes):
-            print("[ERROR] Status subscription rejected.", flush=True)
+            print("[ERROR] Reply subscription rejected.", flush=True)
             finished.set()
             return
         # Listen for the automatic reply before sending the action.
@@ -52,11 +57,21 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
         print(f"[REQUEST] Sent to {topic}: {payload}", flush=True)
 
     def on_message(client, userdata, msg):
-        nonlocal response
-        if msg.topic != status_topic or msg.retain:
+        nonlocal response, next_station
+        if msg.retain:
             return
         try:
-            status = json.loads(msg.payload.decode("utf-8"))
+            text = msg.payload.decode("utf-8")
+            if action == "review" and msg.topic == next_station_topic:
+                next_station = text.strip()
+                if next_station:
+                    print(f"[NEXT STATION] Received from {msg.topic}: {next_station}", flush=True)
+                    if response is not None and response["status"] == "review":
+                        finished.set()
+                return
+            if msg.topic != status_topic:
+                return
+            status = json.loads(text)
         except (ValueError, UnicodeDecodeError):
             return
         # The team name is resolved by the controller, not by this client.
@@ -66,7 +81,8 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
             return
         response = status
         print(f"[STATUS] Received from {msg.topic}: {json.dumps(status)}", flush=True)
-        finished.set()
+        if status["status"] == "error" or action != "review" or next_station:
+            finished.set()
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(station_id, MQTT_PASSWORD)
@@ -78,10 +94,14 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
         client.connect(MQTT_HOST, MQTT_PORT, 60)
         client.loop_start()
         if not finished.wait(RESPONSE_TIMEOUT):
-            print(f"[TIMEOUT] No status reply within {RESPONSE_TIMEOUT:g} seconds.", flush=True)
+            expected = "review status and next-station destination" if action == "review" else "status reply"
+            print(f"[TIMEOUT] Did not receive {expected} within {RESPONSE_TIMEOUT:g} seconds.", flush=True)
+            return None
     finally:
         client.disconnect()
         client.loop_stop()
+    if response is not None and response["status"] == "review" and next_station:
+        return {**response, "next_station": next_station}
     return response
 
 

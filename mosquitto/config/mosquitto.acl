@@ -4,6 +4,7 @@ topic read station/+/login
 topic read station/+/start
 topic read station/+/complete
 topic read station/+/review
+topic write station/%u/nextStation # next station is send automatically after the review is done and when we send that we set the state to idle
 topic readwrite station/+/status
 topic readwrite station/+/servertime
 
@@ -13,6 +14,7 @@ pattern write station/%u/login
 pattern write station/%u/start
 pattern write station/%u/complete
 pattern write station/%u/review
+pattern read station/%u/nextStation
 
 # Status queries and replies share the same topic.
 pattern readwrite station/%u/status

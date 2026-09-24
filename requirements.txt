@@ -2,3 +2,4 @@ alembic
 sqlalchemy
 psycopg2-binary
 python-dotenv
+paho-mqtt>=2.0

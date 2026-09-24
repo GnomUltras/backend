@@ -1,4 +1,14 @@
 mosquitto/data/*
 mosquitto/log/*
-gameController/__pycache__/*
-.venv
+
+# Generated Python files and local environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+
+# Local environment settings (keep example files tracked)
+.env
+.env.*
+!.env.example

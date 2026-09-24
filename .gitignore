@@ -1,3 +1,4 @@
 mosquitto/data/*
 mosquitto/log/*
 gameController/__pycache__/*
+.venv

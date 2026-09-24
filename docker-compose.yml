@@ -76,6 +76,24 @@ services:
     networks:
       - stack
 
+  backend:
+    build: ./
+    container_name: backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mosquitto:
+        condition: service_started
+    environment:
+      DATABASE_URL: postgresql+psycopg2://stationuser:@postgres:5432/stations
+      MQTT_HOST: mosquitto
+      MQTT_PORT: 1883
+    volumes:
+      - ./:/app
+    networks:
+      - stack
+
 networks:
   stack:
     driver: bridge

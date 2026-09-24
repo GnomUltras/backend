@@ -403,6 +403,133 @@ JSON `next_station` messages are different from the new station-specific
 `station/<station_id>/nextStation` topic and its plain-text payload. Use the topics
 and plain-text action payloads documented above for new station implementations.
 
+# Database schema
+
+Alembic revision `0002_station_state` prepares persistent station state and a
+separate event history for Grafana. The controller still keeps its state in
+memory; reading and updating `station_state` will be implemented in the next step.
+Revision `0003_result_timing` renames the existing result timestamps to
+`started_at` and `completed_at`, preserving their values. Recording these times
+in the controller is also part of the next integration step.
+`station_events.station_id` is a text column created by `0002_station_state`.
+The controller writes MQTT usernames such as `station01` directly. Numeric
+station IDs remain in the other tables for their internal relationships.
+This schema targets a freshly created database; existing numeric event columns
+are not converted automatically.
+
+| Table | Purpose |
+| --- | --- |
+| `team` | Team names such as `Team-01`, with a unique name and an internal numeric ID. The unused `signature` column is removed. |
+| `station` | Station IDs and names such as `station01`. |
+| `station_state` | One current-state row per station: `status`, `team_name`, `review_score`, and `updated_at`. |
+| `results` | One result per team/station pair: `started_at`, `completed_at`, review, and result status. Timings remain here after the station returns to idle. |
+| `station_events` | Event history for Grafana: timestamp, station username (e.g. `station01`), team name, event type, and optional review score. Existing rows are preserved. |
+
+NFC UUIDs and their team mapping stay exclusively in `gameController/config.py`.
+The database uses the resolved team name. For compatibility with the current
+controller, the event history calls this string column `team_id`; it is not the
+numeric `team.id` used by `results`.
+
+`station_state` accepts `idle`, `login`, `start`, `complete`, and `review`.
+An idle station has no team; every other state requires a known team name.
+Only `review` has a score (0, 1, or 2). No next-station destination is stored in
+this table. The planned routing logic will choose a free station when the team
+finishes; the current controller still uses the temporary sequential routing rule.
+State transitions and acknowledgement handling remain controller responsibilities.
+The future controller update must write state and its event in
+one transaction and refresh `updated_at` on each state change.
+
+### Current state, results, and events
+
+`station_state` is the live snapshot: **what is happening at this station now?**
+Its single row for a station is updated as that station moves through the game.
+For example, station01 can show `status = start` and `team_name = Team-01`.
+After the next-station handoff, that same row becomes `idle`, with no team,
+or review score. It does not keep previous visits.
+
+`results` describes **how a particular team did at a particular station**.
+`started_at` is set when `start` is accepted, and `completed_at` when `complete`
+is accepted. Both are timezone-aware timestamps. Login waiting time and review
+time are excluded. Before starting, both are null; during play, only `started_at`
+is filled. A completion requires a start and cannot precede it. No separate
+duration column is needed: duration is `completed_at - started_at`.
+The existing primary key allows one result per team/station pair; multiple
+attempts or separate game rounds would need a later schema change.
+
+`station_events` is the chronological history: **what changed, and when?**
+Each accepted transition adds a new row instead of replacing the previous one.
+For example, Team-01 can have `login` at 14:00, `start` at 14:01, `complete` at
+14:04, and later `review` and `idle` events. The result retains the three-minute
+playing time even after the live station state is reset. An `idle` event keeps
+the finishing team's name for history; the live idle state has no team.
+
+The intended writes after the controller integration are:
+
+| Accepted transition | `station_state` | `results` | `station_events` |
+| --- | --- | --- | --- |
+| `login` | Set team and `login`. | Create the team's station result with no start/completion time. | Append `login`. |
+| `start` | Set `start`. | Set `started_at` and result status. | Append `start`. |
+| `complete` | Set `complete`. | Set `completed_at` and result status. | Append `complete`. |
+| `review` | Set `review` and score. | Save review and result status. | Append `review` with score. |
+| Handoff acknowledged | Set `idle` and clear team and score. | Keep the finished result and its times. | Append `idle`. |
+
+Use the same server timestamp for a transition's result timestamp and event,
+and commit the corresponding state, result, and event changes together.
+A status query only reads state and does not create a new event. Currently,
+only event logging is connected to the controller; the other writes above are
+the plan for the next implementation step.
+
+The migration does not insert demo teams/stations or infer current state from old
+events. The controller integration will populate the catalog and initial state
+rows. Existing team names must be unique before applying this migration.
+Existing result timestamps must also satisfy the timing rule before applying
+`0003_result_timing`; inconsistent records are not silently rewritten.
+
+Apply migrations using the existing backend image (PostgreSQL must be running):
+
+```sh
+docker compose build backend
+docker compose run --rm --no-deps backend true
+```
+
+The backend entrypoint runs `alembic upgrade head` before exiting. Currently,
+Alembic reads its connection URL from `alembic.ini`; use your database credentials
+there (and `localhost` instead of `postgres` when running Alembic locally).
+The migration removes any old `team.signature` values. A downgrade recreates an
+empty signature column and drops `station_state`, but deliberately keeps the
+event history because the current controller still uses it.
+
+For a Grafana table panel showing the event history:
+
+```sql
+SELECT created_at AS "time", station_id, team_id AS team_name,
+       event_type AS status, review_score
+FROM station_events
+WHERE $__timeFilter(created_at)
+ORDER BY created_at DESC, id DESC;
+```
+
+For a Grafana table panel showing completed playing times per team and station:
+
+```sql
+SELECT r.completed_at AS "time", t.name AS team_name, s.name AS station_name,
+       r.started_at, r.completed_at,
+       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS duration_seconds
+FROM results AS r
+JOIN team AS t ON t.id = r.team_id
+JOIN station AS s ON s.station_id = r.station_id
+WHERE r.completed_at IS NOT NULL AND $__timeFilter(r.completed_at)
+ORDER BY r.completed_at DESC, t.name, s.name;
+```
+
+Set the `duration_seconds` field unit to seconds in Grafana. This panel will
+receive data once the controller writes result timestamps (or results are
+populated manually); creating the schema alone does not record playing times.
+
+Enable the dashboard refresh interval to show new events. Once the controller
+integration is implemented, `station_state` will provide the current state even
+after a controller restart.
+
 # grafana
 
 ## datasource setup

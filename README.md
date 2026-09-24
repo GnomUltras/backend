@@ -116,8 +116,8 @@ stateDiagram-v2
     idle --> login: login + NFC UUID
     login --> start: start + NFC UUID
     start --> complete: complete + NFC UUID
-    complete --> review: review + NFC UUID;score
-    review --> login: login + next team's NFC UUID
+    complete --> review: review + NFC UUID
+    review --> idle: waiting for next team
 ```
 
 | Publish action | Allowed current state | Meaning and payload |

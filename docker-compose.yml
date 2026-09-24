@@ -55,6 +55,8 @@ services:
     restart: unless-stopped
     init: true
     depends_on:
+      backend:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mosquitto:
@@ -79,16 +81,17 @@ services:
   backend:
     build: ./
     container_name: backend
-    restart: unless-stopped
+    restart: "no"
+    command: ["true"]
     depends_on:
       postgres:
         condition: service_healthy
-      mosquitto:
-        condition: service_started
     environment:
-      DATABASE_URL: postgresql+psycopg2://stationuser:@postgres:5432/stations
-      MQTT_HOST: mosquitto
-      MQTT_PORT: 1883
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-stations}
+      DB_USER: ${POSTGRES_USER:-stationuser}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
     volumes:
       - ./:/app
     networks:

@@ -22,8 +22,8 @@ def upgrade() -> None:
     # One row per station, independent of how many teams have visited it.
     op.create_table(
         "station_state",
-        sa.Column("station_id", sa.Integer(), primary_key=True),
-        sa.Column("team_name", sa.String(length=255), nullable=True),
+        sa.Column("station_id", sa.String(length=50), primary_key=True),
+        sa.Column("team_id", sa.String(length=50), nullable=True),
         sa.Column("status", sa.String(length=20), nullable=False, server_default="idle"),
         sa.Column("review_score", sa.SmallInteger(), nullable=True),
         sa.Column(
@@ -36,15 +36,15 @@ def upgrade() -> None:
             ["station_id"], ["station.station_id"], name="fk_station_state_station"
         ),
         sa.ForeignKeyConstraint(
-            ["team_name"], ["team.name"], name="fk_station_state_team", onupdate="CASCADE"
+            ["team_id"], ["team.id"], name="fk_station_state_team", onupdate="CASCADE"
         ),
         sa.CheckConstraint(
             "status IN ('idle', 'login', 'start', 'complete', 'review')",
             name="ck_station_state_status",
         ),
         sa.CheckConstraint(
-            "(status = 'idle' AND team_name IS NULL) OR "
-            "(status <> 'idle' AND team_name IS NOT NULL)",
+            "(status = 'idle' AND team_id IS NULL) OR "
+            "(status <> 'idle' AND team_id IS NOT NULL)",
             name="ck_station_state_team",
         ),
         sa.CheckConstraint(
@@ -56,7 +56,7 @@ def upgrade() -> None:
 
     # The controller may already have created this table. Keep its rows and its
     # column names so the current db.py continues to work during the transition.
-    # team_id is the resolved name (e.g. Team-01), not an NFC UUID or numeric FK.
+    # Team and station IDs use the same strings as the catalog and MQTT payloads.
     op.execute("""
         CREATE TABLE IF NOT EXISTS station_events (
             id SERIAL PRIMARY KEY,

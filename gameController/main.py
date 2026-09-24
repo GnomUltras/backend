@@ -2,12 +2,11 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
 import config
-from db import init_db
-from gameLogic import on_connect, on_message, on_publish
+from gameLogic import init_game, on_connect, on_message, on_publish
 
 
 def main():
-    if not init_db():
+    if not init_game():
         return 1
 
     client = mqtt.Client(CallbackAPIVersion.VERSION2, client_id=config.MQTT_CLIENT_ID)

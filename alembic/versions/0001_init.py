@@ -6,9 +6,11 @@ Create Date: 2026-09-23
 
 Derived from Untitled_Diagram.drawio:
   - team(id PK, signature, name)
-  - station(station_id PK, name, status)
+  - station(station_id PK, name)
   - results(team_id FK->team.id, station_id FK->station.station_id,
             start_time, end_time, review)  -- composite PK (team_id, station_id)
+
+Team IDs are strings such as Team-01; station IDs are strings such as station01.
 
 Relationships:
   team (1) --- (n) results
@@ -27,21 +29,21 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "team",
-        sa.Column("id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("id", sa.String(length=50), primary_key=True),
         sa.Column("signature", sa.String(length=255), nullable=True),
         sa.Column("name", sa.String(length=255), nullable=False),
     )
 
     op.create_table(
         "station",
-        sa.Column("station_id", sa.Integer(), primary_key=True, autoincrement=True),
+        sa.Column("station_id", sa.String(length=50), primary_key=True),
         sa.Column("name", sa.String(length=255), nullable=False),
     )
 
     op.create_table(
         "results",
-        sa.Column("team_id", sa.Integer(), nullable=False),
-        sa.Column("station_id", sa.Integer(), nullable=False),
+        sa.Column("team_id", sa.String(length=50), nullable=False),
+        sa.Column("station_id", sa.String(length=50), nullable=False),
         sa.Column(
             "created_at",
             sa.DateTime(timezone=True),

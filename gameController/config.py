@@ -22,6 +22,7 @@ DB_CONFIG = {
     "dbname": os.getenv("DB_NAME", "stations"),
     "user": os.getenv("DB_USER", "stationuser"),
     "password": os.getenv("DB_PASSWORD", "changeme"),
+    "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
 }
 
 # Game

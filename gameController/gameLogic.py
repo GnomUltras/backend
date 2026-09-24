@@ -14,7 +14,7 @@ NEXT_ACTION = {
     "login": "start",
     "start": "complete",
     "complete": "review",
-    "review": "login",
+    "review": "idle",
 }
 
 

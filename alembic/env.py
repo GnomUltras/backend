@@ -2,12 +2,27 @@ from logging.config import fileConfig
 
 from sqlalchemy import engine_from_config
 from sqlalchemy import pool
+from sqlalchemy import URL
+
+from gameController.config import DB_CONFIG
 
 from alembic import context
 
 # this is the Alembic Config object, which provides
 # access to the values within the .ini file in use.
 config = context.config
+
+# Migrations and the controller must target the same configured database.
+database_url = URL.create(
+    "postgresql+psycopg2",
+    username=DB_CONFIG["user"],
+    password=DB_CONFIG["password"],
+    host=DB_CONFIG["host"],
+    port=DB_CONFIG["port"],
+    database=DB_CONFIG["dbname"],
+    query={"connect_timeout": str(DB_CONFIG["connect_timeout"])},
+)
+config.set_main_option("sqlalchemy.url", database_url.render_as_string(hide_password=False).replace("%", "%%"))
 
 # Interpret the config file for Python logging.
 # This line sets up loggers basically.

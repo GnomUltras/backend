@@ -17,9 +17,9 @@ services:
     container_name: postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: stationuser
-      POSTGRES_PASSWORD: changeme
-      POSTGRES_DB: stations
+      POSTGRES_USER: ${POSTGRES_USER:-stationuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-stations}
     ports:
       - "5432:5432"
     volumes:
@@ -27,7 +27,7 @@ services:
     networks:
       - stack
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-stationuser} -d ${POSTGRES_DB:-stations}"]
+      test: ["CMD-SHELL", "pg_isready -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -49,23 +49,49 @@ services:
     networks:
       - stack
 
-  # backend:
-  #   Python + REST service goes here later.
-  #   It will need to join the "stack" network so it can reach
-  #   mosquitto:1883 and postgres:5432 by service name.
-  backend:
-    build: ./
-    container_name: backend
+  game-controller:
+    build: ./gameController
+    container_name: game-controller
     restart: unless-stopped
+    init: true
     depends_on:
+      backend:
+        condition: service_completed_successfully
       postgres:
         condition: service_healthy
       mosquitto:
         condition: service_started
     environment:
-      DATABASE_URL: postgresql+psycopg2://stationuser:@postgres:5432/stations
       MQTT_HOST: mosquitto
-      MQTT_PORT: 1883
+      MQTT_PORT: "1883"
+      MQTT_USER: ${MQTT_USER:-backend}
+      MQTT_PASSWORD: ${MQTT_PASSWORD:-testen123}
+      MQTT_TOPIC: ${MQTT_TOPIC:-station/#}
+      MQTT_CLIENT_ID: ${MQTT_CLIENT_ID:-game_controller}
+      MQTT_KEEPALIVE: ${MQTT_KEEPALIVE:-60}
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-stations}
+      DB_USER: ${POSTGRES_USER:-stationuser}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      STATION_COUNT: ${STATION_COUNT:-5}
+    networks:
+      - stack
+
+  backend:
+    build: ./
+    container_name: backend
+    restart: "no"
+    command: ["true"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DB_HOST: postgres
+      DB_PORT: "5432"
+      DB_NAME: ${POSTGRES_DB:-stations}
+      DB_USER: ${POSTGRES_USER:-stationuser}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
     volumes:
       - ./:/app
     networks:

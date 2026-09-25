@@ -18,6 +18,34 @@ NEXT_ACTION = {
 pending_next_stations = {}
 
 
+ERROR_MESSAGES = {
+    "INVALID_PAYLOAD": "Send a non-empty UTF-8 NFC UUID; review requires <NFC UUID>;<score>.",
+    "INVALID_REVIEW_SCORE": "Review score must be 0, 1, or 2.",
+    "UNKNOWN_TEAM": "The NFC UUID does not identify a configured team in the database.",
+    "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
+    "INVALID_STATE": "Review is only allowed after the game has completed.",
+    "TEAM_MISMATCH": "Only the team currently assigned to this station may submit its review.",
+    "STATION_ALREADY_COMPLETED": "This team has already completed this station in this run.",
+    "STATION_UNAVAILABLE": "The station is not configured or its database state is missing.",
+    "DATABASE_ERROR": "The database operation failed. Query status and retry when available.",
+}
+
+
+class RequestRejectedError(ValueError):
+    """A request that must be rejected without committing any game changes."""
+
+    def __init__(self, error_code, message=None):
+        self.error_code = error_code
+        super().__init__(message or ERROR_MESSAGES[error_code])
+
+
+class StationAlreadyCompletedError(RequestRejectedError):
+    """The team's saved result prevents replaying this station in this run."""
+
+    def __init__(self, message=None):
+        super().__init__("STATION_ALREADY_COMPLETED", message)
+
+
 def configured_station_ids():
     return [f"station{number:02d}" for number in range(1, config.STATION_COUNT + 1)]
 
@@ -35,6 +63,8 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
     """Check the locked current state and decide all changes before committing."""
     with db.station_transaction(station_id) as (cur, state):
         if state is None:
+            if action in ("login", "review"):
+                raise RequestRejectedError("STATION_UNAVAILABLE")
             return None
         if action == "idle":
             # An old MQTT acknowledgement must never release a later visit.
@@ -42,18 +72,33 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
                     or state["updated_at"] != expected_updated_at):
                 return None
         elif NEXT_ACTION.get(state["status"]) != action:
+            if action in ("login", "review"):
+                raise RequestRejectedError("STATION_BUSY" if action == "login" else "INVALID_STATE")
             return None
         elif action != "login" and state["team_id"] != team_id:
+            if action == "review":
+                raise RequestRejectedError("TEAM_MISMATCH")
             return None
-        if action == "review" and review_score not in (0, 1, 2):
-            return None
+        if action == "review" and (type(review_score) is not int or review_score not in (0, 1, 2)):
+            raise RequestRejectedError("INVALID_REVIEW_SCORE")
 
         if not db.team_exists(cur, team_id):
+            if action in ("login", "review"):
+                raise RequestRejectedError("UNKNOWN_TEAM")
             return None
+        if action == "login":
+            previous_result = db.get_result(cur, team_id, station_id)
+            if previous_result is not None and (
+                previous_result["completed_at"] is not None
+                or previous_result["status"] in ("complete", "review")
+            ):
+                raise StationAlreadyCompletedError(
+                    f"{team_id} has already completed {station_id} in this run."
+                )
         # Use one database timestamp after acquiring the lock for every write.
         timestamp = db.get_timestamp(cur)
         if action == "login":
-            # Keep the latest result per team/station; earlier visits stay in events.
+            # Only a new or unfinished result may be initialized by login.
             result = {"created_at": timestamp, "status": action,
                       "started_at": None, "completed_at": None, "review": None}
         elif action != "idle":
@@ -96,14 +141,23 @@ def on_connect(client, userdata, flags, reason_code, properties):
         print(f"Connection failed: {reason_code}", flush=True)
 
 
-def send_status(client, station_id, team_id, status):
+def send_status(client, station_id, team_id, status, *, action=None, error_code=None):
     payload = {"status": status, "team_id": team_id}
+    if error_code is not None:
+        payload.update(action=action, error_code=error_code, message=ERROR_MESSAGES[error_code])
     result = client.publish(f"station/{station_id}/status", json.dumps(payload), qos=1, retain=False)
     if result.rc == 0:
         print(f"[STATUS RESPONSE] Sent to {station_id}: {json.dumps(payload)}", flush=True)
     else:
         print(f"[STATUS ERROR] Could not send response to {station_id}: {result.rc}", flush=True)
     return result.rc == 0
+
+
+def send_error(client, station_id, team_id, action, error_code):
+    # Preserve the existing response format for actions outside login/review.
+    if action in ("login", "review"):
+        return send_status(client, station_id, team_id, "error", action=action, error_code=error_code)
+    return send_status(client, station_id, team_id, "error")
 
 
 def send_next_station(client, state):
@@ -152,6 +206,8 @@ def on_message(client, userdata, msg):
         return
 
     if station_id not in configured_station_ids():
+        if action in ("login", "review"):
+            send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
         return
 
     # JSON status replies on the shared topic must not query the DB or loop.
@@ -162,49 +218,63 @@ def on_message(client, userdata, msg):
     try:
         current_state = db.get_station_state(station_id)
         if current_state is None:
-            raise DatabaseError(f"Station {station_id} is not initialized.")
+            send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
+            return
     except DatabaseError as exc:
         print(f"[DB ERROR] Could not read {station_id}: {exc}", flush=True)
-        send_status(client, station_id, None, "error")
+        send_error(client, station_id, None, action, "DATABASE_ERROR")
         return
     # Status queries are read-only and independent of the allowed next action.
     if action == "status":
         send_status(client, station_id, current_state["team_id"], current_state["status"])
         return
 
-    # Ignore duplicates and out-of-order requests before processing their payload.
-    if action != NEXT_ACTION.get(current_state["status"]):
+    # Login/review are checked again under the transaction lock, with error codes.
+    # Keep the existing silent handling for out-of-order start/complete requests.
+    if action not in ("login", "review") and action != NEXT_ACTION.get(current_state["status"]):
         return
 
     try:
         nfc_uuid = msg.payload.decode("utf-8").strip()
+        if not nfc_uuid:
+            raise ValueError("NFC UUID must not be empty.")
         review_score = None
         # Review payload: <nfc_uuid>;<score>. Other actions carry only the UUID.
         if action == "review":
             nfc_uuid, score = nfc_uuid.rsplit(";", 1)
             nfc_uuid = nfc_uuid.strip()
-            if score.strip() not in ("0", "1", "2"):
-                raise ValueError("Review score must be 0, 1, or 2.")
-            review_score = int(score)
+            if not nfc_uuid:
+                raise ValueError("NFC UUID must not be empty.")
     except (ValueError, UnicodeDecodeError):
-        send_status(client, station_id, None, "error")
+        send_error(client, station_id, None, action, "INVALID_PAYLOAD")
         return
 
     team_id = config.NFC_TEAMS.get(nfc_uuid)
+    if action == "review":
+        if score.strip() not in ("0", "1", "2"):
+            # Do not expose an invalid configured team value in a JSON reply.
+            known_team = team_id if isinstance(team_id, str) and team_id.strip() and len(team_id) <= 50 else None
+            send_error(client, station_id, known_team, action, "INVALID_REVIEW_SCORE")
+            return
+        review_score = int(score)
     # Only the logged-in team can advance the station until review succeeds.
-    if action != "login" and team_id != current_state["team_id"]:
+    if action in ("start", "complete") and team_id != current_state["team_id"]:
         return
 
     if not isinstance(team_id, str) or not team_id.strip() or len(team_id) > 50:
         print("[ERROR] NFC UUID has no valid team mapping.", flush=True)
-        send_status(client, station_id, None, "error")
+        send_error(client, station_id, None, action, "UNKNOWN_TEAM")
         return
 
     try:
         new_state = change_station_state(station_id, team_id, action, review_score)
+    except RequestRejectedError as exc:
+        print(f"[{action.upper()} REJECTED] {exc.error_code}: {exc}", flush=True)
+        send_error(client, station_id, team_id, action, exc.error_code)
+        return
     except DatabaseError as exc:
         print(f"[DB ERROR] Could not save {action} for {station_id}: {exc}", flush=True)
-        send_status(client, station_id, team_id, "error")
+        send_error(client, station_id, team_id, action, "DATABASE_ERROR")
         return
     if new_state is None:
         return

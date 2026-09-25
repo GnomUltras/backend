@@ -13,6 +13,26 @@ Database: PostgreSQL (Time series database for grafana)<br>
 Backend Service: Python (handles events & database handling)<br>
 MQTT-broker: mosquitto
 
+## Guide contents
+
+- [Backend service](#backend-service)
+  - [Guide contents](#guide-contents)
+  - [MQTT integration guide for station groups](#mqtt-integration-guide-for-station-groups)
+    - [1. Connect to the broker](#1-connect-to-the-broker)
+    - [2. Topic reference](#2-topic-reference)
+    - [3. Game actions and their required order](#3-game-actions-and-their-required-order)
+    - [4. Status replies and read-only queries](#4-status-replies-and-read-only-queries)
+    - [5. Example: one complete station visit](#5-example-one-complete-station-visit)
+    - [6. Errors, timeouts, and reconnects](#6-errors-timeouts-and-reconnects)
+      - [Example: correct a rejected review](#example-correct-a-rejected-review)
+    - [7. Server time (Berlin time, included in the controller container)](#7-server-time-berlin-time-included-in-the-controller-container)
+    - [8. Try the protocol with the supplied clients](#8-try-the-protocol-with-the-supplied-clients)
+- [Database schema](#database-schema)
+    - [Current state, results, and events](#current-state-results-and-events)
+- [grafana](#grafana)
+  - [datasource setup](#datasource-setup)
+- [Flowchart for one station](#flowchart-for-one-station)
+
 
 ```mermaid
 flowchart TD
@@ -46,9 +66,8 @@ flowchart TD
     Client(("Benutzer / Admin<br/>(Browser)")):::user
 
     %% Verbindungen (Exakte ursprüngliche Struktur)
-    S1 & S2 & S3 & S4 & S5 -- "MQTT Publish (Status)
-    Subscribe (commands)" --> MQTT
-    MQTT <-- "MQTT Subscribe /<br/>Routing-Anweisungen" --> PY
+    S1 & S2 & S3 & S4 & S5 <-- "Publish actions and queries<br/>Receive status, errors, nextStation and time" --> MQTT
+    MQTT <-- "Action handling, replies<br/>and Berlin time service" --> PY
     PY -- "SQL (INSERT / UPDATE)" --> DB
     GF -- "SQL (SELECT)" --> DB
     Client -- "HTTP (Port 3000)" --> GF
@@ -57,7 +76,7 @@ flowchart TD
 
 ## MQTT integration guide for station groups
 
-This section describes the station protocol, including the new `nextStation`
+This section describes the station protocol, including the `nextStation`
 handoff after review, the [broker permissions](mosquitto/config/mosquitto.acl), and
 the separate [server-time script](gameController/servertime.py). All examples use station 1.
 Replace `station01` with your group's assigned station ID everywhere, including the MQTT username.
@@ -116,9 +135,10 @@ themselves. The separate `servertime` topic remains available.
 
 ### 3. Game actions and their required order
 
-Each station has its own state. A newly started controller initializes all stations
-to `idle`. Station requests follow this order; the final reset is an automatic
-controller action:
+Each station has its own persistent database state. New station rows start at
+`idle`; restarting the controller preserves existing states, results, and completed
+visits. Station requests follow this order; the final reset is an automatic
+controller action after the destination message is acknowledged by the broker:
 
 ```mermaid
 stateDiagram-v2
@@ -137,13 +157,22 @@ stateDiagram-v2
 | `complete` | `start` | Send an NFC UUID belonging to the same team when the game finishes. |
 | `review` | `complete` | Send `<NFC UUID>;<score>`, e.g. `AA BB CC 01;2`. The score must be exactly `0`, `1`, or `2`. |
 
+A team can complete each station **only once per run**. After Team-01 completes
+station01, playing station02 does not allow it to return and play station01 again.
+A repeat login at an idle station returns `status: "error"`, `team_id: "Team-01"`,
+and `error_code: "STATION_ALREADY_COMPLETED"` on that station's `/status` topic.
+The station stays idle, and the original result, timings, and review remain
+unchanged. Other teams can still play that station.
+
 The protocol defines the numeric review values but does not assign them UI labels.
 Agree on the meaning of 0, 1, and 2 with the project team. The score is saved in the
 database; it is not included in the MQTT status reply.
 
 The station stays occupied by the logged-in team through `login`, `start`,
-`complete`, and the review handoff. New logins and out-of-order actions are ignored
-while it is occupied. A successful review finishes the visit in this order:
+`complete`, and the review handoff. A new login while occupied receives
+`STATION_BUSY`; an out-of-order review receives `INVALID_STATE`. Out-of-order
+`start`/`complete` requests remain silently ignored.
+A successful review finishes the visit in this order:
 
 1. Validate the review and save it in PostgreSQL.
 2. Set the station state to `review`, keeping the current team ID.
@@ -164,9 +193,11 @@ application has processed the destination. While that acknowledgement or the
 `idle` database write is pending, a status query still returns `review`.
 
 For now, routing simply uses the next station number: `station01` goes to
-`station02`, and the last configured station goes back to `station01`. The routing
-decision will later be replaced by the game logic; it does not reserve the next
-station or log the team in there.
+`station02`, and the last configured station goes back to `station01`. This rule
+does not check availability or skip stations the team has already completed. It
+does not reserve the destination or log the team in there. A team directed back
+to a completed station will receive `STATION_ALREADY_COMPLETED` when it tries to
+log in. There is currently no automatic end-of-run message or new-run command.
 
 NFC UUIDs must match entries in [gameController/config.py](gameController/config.py)
 under `NFC_TEAMS`. The current test mappings are:
@@ -182,7 +213,8 @@ under `NFC_TEAMS`. The current test mappings are:
 These are example chip IDs. Give your real NFC UUIDs to the backend group so they
 can configure the mapping. Matching is case-sensitive and internal spaces matter;
 the controller only removes surrounding whitespace. A station number and a team
-number are independent: any configured team can log in at any available station.
+number are independent: a configured team can log in at an idle station it has
+not already completed in the current run.
 
 ### 4. Status replies and read-only queries
 
@@ -200,8 +232,9 @@ and the new state is set, the controller automatically publishes a JSON status r
 | `status` | `idle`, `login`, `start`, `complete`, `review`, or `error` |
 | `team_id` | The resolved team name, or JSON `null` if no team is assigned/identified |
 
-The topic identifies the station. The reply has no `station_id`, NFC UUID,
-request ID, timestamp, review score, or detailed error message.
+The topic identifies the station. Successful replies have no `station_id`, NFC UUID,
+request ID, timestamp, or review score. Login/review errors add `action`,
+`error_code`, and `message`, as documented in section 6.
 
 To ask for the current state without changing it, publish the single character
 `1` to `station/<station_id>/status`. This is plain text, not the JSON string `"1"`
@@ -238,9 +271,8 @@ sequenceDiagram
     S->>B: PUBLISH station/station01/login: AA BB CC 01
     B->>C: Deliver login request
     C->>C: Check state and resolve NFC UUID
-    C->>D: Save login event for Team-01
-    D-->>C: Saved successfully
-    C->>C: Set station state to login
+    C->>D: Lock station, check previous result, and save login state, result and event
+    D-->>C: Transaction committed
     C->>B: PUBLISH station/station01/status
     B-->>S: {"status":"login","team_id":"Team-01"}
     Note over S,C: Station can now start the game and send the start action
@@ -270,15 +302,13 @@ sequenceDiagram
     Note over S,C: Station already subscribes to status and nextStation
     S->>C: station/station01/review (NFC UUID and score)
     C->>C: Validate current team, state, and score
-    C->>D: Save review event and score
+    C->>D: Save review state, result, score and event in one transaction
     D-->>C: Commit successful
-    C->>C: Set station01 to review, Team-01
     C-->>S: station/station01/status: {"status":"review","team_id":"Team-01"}
     C-->>S: station/station01/nextStation: station02
     Note over C: Wait for the broker's nextStation acknowledgement
-    C->>D: Save idle event for Team-01
+    C->>D: Set idle, clear current team and score, and save idle event for Team-01
     D-->>C: Commit successful
-    C->>C: Set station01 to idle, no team
     Note over S,C: Station01 can now accept a new login
 ```
 
@@ -295,25 +325,103 @@ broker delivery; use the JSON reply to confirm that the controller accepted the 
 
 ### 6. Errors, timeouts, and reconnects
 
-An error reply looks like this:
+Rejected `login` and `review` requests receive an error on the station's `/status`
+topic. For example, an invalid review score returns:
 
 ```json
-{"status":"error","team_id":null}
+{
+  "status": "error",
+  "team_id": "Team-01",
+  "action": "review",
+  "error_code": "INVALID_REVIEW_SCORE",
+  "message": "Review score must be 0, 1, or 2."
+}
 ```
 
-A database failure can instead include the resolved team ID. `error` is a reply,
-not a stored station state: failed actions leave the previous state unchanged.
+Use `error_code` in your station logic; `message` is readable text for display.
+`action` identifies the rejected request. `team_id` is the requesting team when
+known, otherwise `null`; it does not replace the station's current team.
+Successful status replies retain their existing two-field format. Errors for
+`start`, `complete`, and status queries retain the older `status`/`team_id` format.
+
+**Errors are MQTT replies, never database states or events.** A rejected login or
+review leaves `station_state`, `results`, and `station_events` unchanged. Checks
+that depend on station state run under the database transaction lock. Database
+write failures roll back the transaction rather than saving a partial result.
+For example, an invalid review leaves the station at `complete`, allowing the
+same team to correct its score and retry. A rejected login leaves the previous
+team and state intact. Error replies never trigger a next-station handoff.
+
+In your station application, handle `status: "error"` before treating a message
+as a successful action. For login/review, match `action` to the pending request,
+display `message`, and choose the next step using `error_code`. Keep the current
+game state and team assignment; do not store `error` as the station's state or
+wait for a destination after a rejected review. If local state is uncertain,
+publish `1` to `/status` and use the fresh reply to synchronize.
+
+| `error_code` | Meaning | What the station should do |
+| --- | --- | --- |
+| `INVALID_PAYLOAD` | Invalid UTF-8, empty NFC UUID, or missing review separator/UUID | Send plain `<NFC UUID>` for login or `<NFC UUID>;<score>` for review. |
+| `INVALID_REVIEW_SCORE` | Review score is not `0`, `1`, or `2` | Correct the score and retry. |
+| `UNKNOWN_TEAM` | NFC UUID is unmapped/invalid, or its team is missing from the database | Check the chip and ask the backend group to configure the team. |
+| `STATION_BUSY` | Login attempted while the station is not idle | Wait for the current team and handoff to finish. |
+| `INVALID_STATE` | Review attempted while the station is not at `complete` | Query status and follow the action order; do not restart an already accepted review. |
+| `TEAM_MISMATCH` | A known team tries to review another team's completed game | Submit the review using the team that played. |
+| `STATION_ALREADY_COMPLETED` | This team has already completed this station in the run | Continue to a station it has not completed. |
+| `STATION_UNAVAILABLE` | Station is outside the configured station list or its database state is missing | Check the station ID and backend initialization. |
+| `DATABASE_ERROR` | Reading or saving the requested action failed | Query status before retrying once the database is available. |
+
+If several checks fail, the reply reports the first error encountered. Only
+well-formed request topics delivered to the controller can receive these codes;
+broker authentication/ACL failures and an unavailable controller can still cause
+a client-side error or timeout instead.
 
 | Situation | Current controller behavior | What the station should do |
 | --- | --- | --- |
-| Unknown NFC UUID during an allowed login | Replies with `error` and `team_id: null` | Check the scanned UUID and backend mapping. |
-| Invalid UTF-8 or malformed review/score during the expected action | Replies with `error` and `team_id: null` | Correct the payload format. |
-| Saving a requested station action fails | Replies with `error` and the resolved team ID | Keep the previous local state and contact the backend group if it persists. |
 | Review reply or next-station publish fails, the destination acknowledgement is missing, or saving the final `idle` event fails | Station remains in `review`; it is not released early | Query `status` and contact the backend group. The handoff is retried when the controller reconnects or restarts; duplicate delivery is possible. |
-| Wrong action order, or a repeated action that is no longer the expected next action | Silently ignored; no reply | Query `status` to recover the actual state. |
-| A different or unmapped team sends `start`, `complete`, or `review` with an otherwise valid payload | Silently ignored; no reply | Use the team that logged in. |
-| Invalid station ID/topic, unsupported action, or a message delivered with its retained flag set | Ignored by the controller; permissions may also prevent delivery | Check the topic, credentials, and `retain=false`. |
+| Wrong action order or wrong team for `start`/`complete` | Silently ignored; no reply | Query status and use the team that logged in. |
+| Malformed topic, unsupported action, or a message delivered with its retained flag set | Ignored by the controller; permissions may also prevent delivery | Check the topic, credentials, and `retain=false`. |
 | Broker is reachable but controller is unavailable | No game status reply | Check controller availability with the backend group. |
+
+The review handoff happens **after** the review transaction succeeds. A delivery
+problem at that stage does not undo the accepted review or its database result;
+the committed `review` state is kept for handoff recovery.
+
+#### Example: correct a rejected review
+
+Assume station01 is at `complete` for Team-01. Subscribe to its `/status` and
+`/nextStation` topics before sending requests.
+
+| Step | Topic and payload | Result |
+| --- | --- | --- |
+| Send an invalid score | Publish `AA BB CC 01;9` to `station/station01/review` | `/status` returns `error_code: "INVALID_REVIEW_SCORE"`; no database rows change and no destination is sent. |
+| Confirm current state | Publish `1` to `station/station01/status` | `{"status":"complete","team_id":"Team-01"}` |
+| Correct the score | Publish `AA BB CC 01;2` to `station/station01/review` | `{"status":"review","team_id":"Team-01"}`, followed by plain `station02` on `/nextStation`. |
+| Finish the handoff | No extra station request | After the broker acknowledges the destination, the controller commits `idle`. A fresh status query returns `{"status":"idle","team_id":null}`. |
+
+```mermaid
+sequenceDiagram
+    participant S as Station station01
+    participant C as Controller via MQTT
+    participant D as PostgreSQL
+    Note over S,D: Existing state is complete, Team-01
+    S->>C: review: AA BB CC 01#59;9
+    C-->>S: status: error, action: review, error_code: INVALID_REVIEW_SCORE
+    Note over C,D: State, result and events remain unchanged
+    S->>C: status: 1
+    C->>D: Read current state
+    D-->>C: complete, Team-01
+    C-->>S: status: complete, team_id: Team-01
+    S->>C: review: AA BB CC 01#59;2
+    C->>D: Validate and commit review state, result and event
+    D-->>C: Commit successful
+    C-->>S: status: review, team_id: Team-01
+    C-->>S: nextStation: station02
+    Note over C,D: Broker acknowledgement triggers the idle transaction
+```
+
+Use an MQTT publishing tool to send deliberately invalid payloads. The supplied
+action client validates review scores locally, so it rejects `9` before publishing.
 
 Start a reply timeout after sending a request; the provided clients use five seconds.
 If no reply arrives, query `status` before deciding whether to retry: the controller
@@ -414,7 +522,9 @@ Run the action client once per step in the example visit. Its default NFC UUID i
 For `review`, the action client subscribes to both `/status` and `/nextStation`
 before publishing. It prints the JSON review confirmation and the plain-text
 destination, then disconnects once both have arrived. It handles either arrival
-order and reports a timeout if either reply is missing. Other actions still wait
+order and reports a timeout if either reply is missing. On an error reply it prints
+the full JSON, including the code and message, and stops waiting immediately;
+it does not wait for `/nextStation` or automatically retry. Other actions still wait
 only for their automatic JSON status reply; `clientStatus.py` remains a separate
 read-only query tool.
 
@@ -448,7 +558,8 @@ checks, result/timing decisions, and handoff handling. `db.py` only handles
 database queries, writes, and transactions. The logic runs its checks while the
 database transaction holds the station row lock, so competing requests cannot
 invalidate a check before the corresponding writes commit. `main.py` starts
-game initialization and the MQTT client.
+game initialization, the controller MQTT client, and the separate server-time
+client's network thread.
 
 Alembic revision `0002_station_state` defines persistent station state and a
 separate event history for Grafana. The controller reads and updates these tables
@@ -501,10 +612,16 @@ is accepted. Both are timezone-aware timestamps. Login waiting time and review
 time are excluded. Before starting, both are null; during play, only `started_at`
 is filled. A completion requires a start and cannot precede it. No separate
 duration column is needed: duration is `completed_at - started_at`.
-The existing primary key allows one result per team/station pair. A new login
-by the same team at the same station replaces its previous result and clears
-the old timings/review. Earlier visits remain in `station_events`; retaining
-multiple result rows per pair would require a later schema change.
+The existing primary key allows one result per team/station pair. Before accepting
+login, the controller checks that result under the station's transaction lock.
+A result with `completed_at` set, or status `complete`/`review`, blocks another visit
+by the same team. Only a missing or unfinished result can be initialized on login.
+Rejected repeat visits do not change any state, result, or event rows.
+
+The current schema has no separate run ID: the saved results represent the current
+run. Restarting the controller or resetting a station to idle does not erase a
+team's completion history. Starting a fresh run requires a separate administrative
+reset of the run's data; there is no automatic reset or new-run command here.
 
 `station_events` is the chronological history: **what changed, and when?**
 Each accepted transition adds a new row instead of replacing the previous one.
@@ -517,7 +634,7 @@ The controller performs these writes:
 
 | Accepted transition | `station_state` | `results` | `station_events` |
 | --- | --- | --- | --- |
-| `login` | Set team and `login`. | Create or reset the team's station result with no start/completion time. | Append `login`. |
+| `login` | Set team and `login`. | Create or reset an unfinished result; reject if this team already completed the station. | Append `login` only if accepted. |
 | `start` | Set `start`. | Set `started_at` and result status. | Append `start`. |
 | `complete` | Set `complete`. | Set `completed_at` and result status. | Append `complete`. |
 | `review` | Set `review` and score. | Save review and result status. | Append `review` with score. |
@@ -553,8 +670,9 @@ overridden by `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`.
 Compose supplies the same PostgreSQL credentials to both services.
 
 Start or update the stack with `docker compose up -d --build`. For local
-execution, install `requirements.txt`, run `alembic upgrade head` from the project
-root, then run `python gameController/main.py` with the same DB environment.
+execution, install `requirements.txt` and `tzdata` (needed where system timezone
+data is absent), run `alembic upgrade head` from the project root, then run
+`python gameController/main.py` with the same DB environment.
 The controller no longer creates or changes tables itself.
 The migration removes any old `team.signature` values. A downgrade recreates an
 empty signature column and drops `station_state`, but deliberately keeps the
@@ -615,59 +733,46 @@ TLS/SSL:     disable
 After that import the test dashboard (or any other from us) <br>
 (you may have to click on every panel and click 'run query' once for it to show default data) <br>
 
-# Flowchart for one Station (design draft from main)
+# Flowchart for one station
 
-This draft uses different payloads and state names from the current controller.
-For the implemented MQTT protocol, use the integration guide above.
+This diagram uses the implemented topics, payloads, states, and retry behavior.
+All requests and replies use QoS 1 and `retain=false`. Success replies arrive as
+JSON on `/status`; the destination arrives as plain text on `/nextStation`.
 
 ```mermaid
 flowchart TD
-    A["L&R Login"] --> B["station/x/login<br/>{ Tag_UID: '1A 2B 3C 4D' }"]
+    A["Subscribe to station/station01/status and nextStation; wait for SUBACK"] --> B["Publish login: AA BB CC 01"]
+    B --> C{"Known team, idle station,<br/>station not already completed by team?"}
+    C -->|No| D["Return login error code<br/>Keep database state unchanged"]
+    D --> E["Read status; correct request or choose an uncompleted station"]
+    E --> B
+    C -->|Yes| F["Commit login state, result and event<br/>Reply status: login"]
+    F --> G["Publish start: AA BB CC 01"]
+    G --> H["Commit start and start time<br/>Reply status: start"]
+    H --> I["Play game; publish complete: AA BB CC 01"]
+    I --> J["Commit complete and completion time<br/>Reply status: complete"]
+    J --> K["Publish review: AA BB CC 01;2"]
+    K --> L{"Correct team, complete state,<br/>valid payload and score?"}
+    L -->|No| M["Return review error code<br/>Keep database state unchanged"]
+    M --> N["Read status; correct review or wait for the required state"]
+    N --> K
+    L -->|Yes| O["Commit review state, result and event<br/>Reply status: review"]
+    O --> P["Publish station02 on station/station01/nextStation"]
+    P --> Q{"Broker acknowledges destination?"}
+    Q -->|Yes| R["Commit idle and idle event<br/>Clear current team; keep completed result"]
+    Q -->|No| S["Remain in review<br/> 
+    Resume handoff on controller reconnect"]
+    S --> P
+    R --> T["Station available for a team that has not completed it"]
+    T --> B
 
-    B --> C{"Login möglich?<br/>Station online<br/>AND state = free<br/>AND groupId = null"}
-
-    C -->|Nein| D["Login abgelehnt"]
-    C -->|Ja| E["Backend legt Zuordnung fest<br/>stationId = x<br/>userId = 1<br/>state = waiting<br/>groupId = 1"]
-
-    E --> F["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'waiting',<br/>groupId: '1'<br/>}"]
-
-    F --> G["Nutzer startet Spiel"]
-    G --> H["station/x/start<br/>{ groupId: '1' }"]
-
-    H --> I{"Start möglich?<br/>state = waiting"}
-
-    I -->|Nein| J["Start abgelehnt"]
-    I -->|Ja| K["Status wird auf playing gesetzt"]
-
-    K --> L["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'playing',<br/>groupId: '1'<br/>}"]
-
-    L --> M["L&R weiß:<br/>Station x läuft mit User/Gruppe 1"]
-
-    M --> N["Spiel wird beendet"]
-    N --> O["station/x/complete<br/>{ groupId: '1' }"]
-
-    O --> P["Backend setzt Status auf completed"]
-
-    P --> Q["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'completed',<br/>groupId: '1'<br/>}"]
-
-    Q --> R["L&R zeigt Review an"]
-    R --> S["Gruppe gibt Bewertung ab"]
-
-    S --> T["station/x/review<br/>{<br/>groupId: '1',<br/>rating: 0<br/>}"]
-
-    T --> U["Backend speichert Review in DB"]
-    U --> V["Backend setzt Station auf free"]
-
-    V --> W["station/x/status<br/>{<br/>stationId: 'x',<br/>state: 'free',<br/>groupId: null<br/>}"]
-
-    W --> X["Station wieder verfügbar"]
-
-    style F fill:#fff3cd
-    style L fill:#cfe2ff
-    style Q fill:#d1e7dd
-    style W fill:#d1e7dd
-
-    style D fill:#f8d7da
-    style J fill:#f8d7da
-
+    classDef rejected fill:#f8d7da;
+    classDef accepted fill:#d1e7dd;
+    class D,M rejected;
+    class F,H,J,O,R accepted;
 ```
+
+Database write failures return an error and roll back the action transaction.
+Out-of-order or wrong-team `start`/`complete` requests remain silently ignored;
+the diagram shows their successful path. The controller does not publish an
+automatic idle status reply after handoff; query `/status` to read the new state.

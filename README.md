@@ -27,6 +27,7 @@ MQTT-broker: mosquitto
       - [Example: correct a rejected review](#example-correct-a-rejected-review)
     - [7. Server time (Berlin time, included in the controller container)](#7-server-time-berlin-time-included-in-the-controller-container)
     - [8. Try the protocol with the supplied clients](#8-try-the-protocol-with-the-supplied-clients)
+    - [9. Communication test](#9-communication-test)
 - [Database schema](#database-schema)
     - [Current state, results, and events](#current-state-results-and-events)
 - [grafana](#grafana)
@@ -78,7 +79,8 @@ flowchart TD
 
 This section describes the station protocol, including the `nextStation`
 handoff after review, the [broker permissions](mosquitto/config/mosquitto.acl), and
-the separate [server-time script](gameController/servertime.py). All examples use station 1.
+the separate [server-time script](gameController/servertime.py) and
+[communication test service](gameController/communication_test.py). All examples use station 1.
 Replace `station01` with your group's assigned station ID everywhere, including the MQTT username.
 
 The next-station handoff and automatic reset to `idle` are implemented in
@@ -114,8 +116,9 @@ account or a subscription to `station/#`.
 ### 2. Topic reference
 
 `<station_id>` below is a placeholder, for example `station01`. Topic names are case-sensitive.
-All station-to-backend requests are UTF-8 JSON objects. Use the exact field names
-below. The MQTT topic selects the action and station; send the NFC UUID in
+Game actions, status queries, and time queries are UTF-8 JSON objects. The `/test`
+topic uses plain `1` and `2` instead. Use the exact field names
+below for JSON requests. The MQTT topic selects the action and station; send the NFC UUID in
 `nfc_uuid`, not a team name or a nested object.
 
 | Topic | What the station does | Request payload example | Where the reply arrives |
@@ -127,6 +130,7 @@ below. The MQTT topic selects the action and station; send the NFC UUID in
 | `station/<station_id>/status` | Subscribe for action replies; publish a JSON GET to query state | `{"request":"GET"}` | Same topic, as JSON |
 | `station/<station_id>/nextStation` | Subscribe for the destination sent automatically after a successful review | No station request | Same topic, as plain text, e.g. `station02` |
 | `station/<station_id>/servertime` | Subscribe for time replies; publish a JSON time request | `{"request":"GET"}` | Same topic, as JSON |
+| `station/<station_id>/test` | Subscribe, then publish plain `1` to check communication | `1` (no quotes or JSON wrapper) | Same topic, plain `2` |
 
 Request fields:
 
@@ -149,7 +153,7 @@ the topic. Replies keep their existing formats: status/errors and time are JSON,
 and the backend's `nextStation` destination is still plain text.
 
 Stations have publish permission on the four action topics, and publish/subscribe
-permission on their own `status` and `servertime` topics. Stations only subscribe
+permission on their own `status`, `servertime`, and `test` topics. Stations only subscribe
 to their own `nextStation` topic; the backend publishes to it. The required backend ACL
 rule for that output is `topic write station/+/nextStation`, and the station rule
 is `pattern read station/%u/nextStation`. There are no replies on the action topics
@@ -527,7 +531,8 @@ python -m pip install paho-mqtt==2.1.0
 ```
 
 Set `MQTT_HOST` near the top of [clientStatus.py](gameClient/clientStatus.py),
-[clientLogin.py](gameClient/clientLogin.py), or [clientServertime.py](gameClient/clientServertime.py)
+[clientLogin.py](gameClient/clientLogin.py), [clientServertime.py](gameClient/clientServertime.py),
+or [clientTest.py](gameClient/clientTest.py)
 to `"192.168.1.11"` for the server Pi,
 or `"localhost"` for a broker on your own machine. Then run:
 
@@ -540,6 +545,9 @@ python gameClient/clientLogin.py
 
 # Request the server's Berlin timestamp; enter your station ID when prompted.
 python gameClient/clientServertime.py
+
+# Send plain 1 and wait for plain 2; enter your station ID when prompted.
+python gameClient/clientTest.py
 ```
 
 Run the action client once per step in the example visit. Its default NFC UUID is
@@ -576,6 +584,42 @@ JSON `next_station` messages are different from the new station-specific
 `station/<station_id>/nextStation` topic and its plain-text payload. Use the topics
 and JSON action payloads documented above for new station implementations.
 
+### 9. Communication test
+
+Use `station/<station_id>/test` for a simple communication check. For station 1:
+
+1. Subscribe to `station/station01/test` and wait for SUBACK.
+2. Publish exactly `1` to that same topic, with QoS 1 and `retain=false`.
+3. Wait for exactly `2` on the same topic. Ignore your own echoed `1`.
+
+These payloads are single UTF-8 characters (bytes `0x31` and `0x32`), without
+quotes, whitespace, JSON objects, or additional fields. The service only answers
+`1` with `2`; it ignores `2` and other payloads, so replies cannot create a loop.
+Always send non-retained requests. Stored retained requests delivered when the
+service subscribes are ignored.
+
+The separate [communication_test.py](gameController/communication_test.py) script
+starts automatically in the game-controller container, like the time service.
+It uses its own MQTT connection with client ID `<MQTT_CLIENT_ID>_communication_test`
+and the controller's broker settings. It does not call game logic, access the
+database, change station state, or send `/status` messages. A reply confirms
+communication with this service; it does not check database or game readiness.
+
+The [test client](gameClient/clientTest.py) prints `2` and exits with code 0 after
+a reply. It ignores its echoed `1` and retained messages, and exits with code 1
+on failure or after `RESPONSE_TIMEOUT` seconds without a reply (default: 5).
+Run one test at a time per station because replies contain no request ID.
+
+To apply the service and its broker permissions:
+
+```sh
+docker compose up -d --build mosquitto game-controller
+```
+
+For standalone use, set the `MQTT_HOST` environment variable to your broker
+(default: `127.0.0.1`) and run `python gameController/communication_test.py`.
+Run only one responder per broker; the container already starts one.
+
 # Database schema
 
 `gameController/gameLogic.py` owns action validation, transition rules, team
@@ -583,8 +627,8 @@ checks, result/timing decisions, and handoff handling. `db.py` only handles
 database queries, writes, and transactions. The logic runs its checks while the
 database transaction holds the station row lock, so competing requests cannot
 invalidate a check before the corresponding writes commit. `main.py` starts
-game initialization, the controller MQTT client, and the separate server-time
-client's network thread.
+game initialization, the controller MQTT client, and separate network threads
+for the server-time and communication test services.
 
 Alembic revision `0002_station_state` defines persistent station state and a
 separate event history for Grafana. The controller reads and updates these tables

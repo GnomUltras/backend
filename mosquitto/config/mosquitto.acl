@@ -1,4 +1,4 @@
-# Game Controller and separate time service.
+# Game Controller and separate time and communication test services.
 user backend
 topic read station/+/login
 topic read station/+/start
@@ -8,6 +8,7 @@ topic read station/+/review
 topic write station/+/nextStation
 topic readwrite station/+/status
 topic readwrite station/+/servertime
+topic readwrite station/+/test
 
 
 # Each station uses its MQTT username (station01 to station05) in the topic.
@@ -22,3 +23,6 @@ pattern readwrite station/%u/status
 
 # Keep the separate station time service available.
 pattern readwrite station/%u/servertime
+
+# Plain communication check: send 1, receive 2.
+pattern readwrite station/%u/test

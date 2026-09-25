@@ -114,17 +114,39 @@ account or a subscription to `station/#`.
 ### 2. Topic reference
 
 `<station_id>` below is a placeholder, for example `station01`. Topic names are case-sensitive.
-Action requests are UTF-8 plain text. Do not wrap an NFC UUID in JSON or send a team name.
+All station-to-backend requests are UTF-8 JSON objects. Use the exact field names
+below. The MQTT topic selects the action and station; send the NFC UUID in
+`nfc_uuid`, not a team name or a nested object.
 
 | Topic | What the station does | Request payload example | Where the reply arrives |
 | --- | --- | --- | --- |
-| `station/<station_id>/login` | Publish to register a team at the station | `AA BB CC 01` | `station/<station_id>/status` |
-| `station/<station_id>/start` | Publish when that team's game starts | `AA BB CC 01` | `station/<station_id>/status` |
-| `station/<station_id>/complete` | Publish when that team's game finishes | `AA BB CC 01` | `station/<station_id>/status` |
-| `station/<station_id>/review` | Publish the team's review score after completion | `AA BB CC 01;2` | `station/<station_id>/status` |
-| `station/<station_id>/status` | Subscribe for action replies; publish `1` to query current state | `1` | Same topic, as JSON |
+| `station/<station_id>/login` | Publish to register a team at the station | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
+| `station/<station_id>/start` | Publish when that team's game starts | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
+| `station/<station_id>/complete` | Publish when that team's game finishes | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
+| `station/<station_id>/review` | Publish the team's review score after completion | `{"nfc_uuid":"AA BB CC 01","review_score":2}` | `station/<station_id>/status` |
+| `station/<station_id>/status` | Subscribe for action replies; publish a JSON GET to query state | `{"request":"GET"}` | Same topic, as JSON |
 | `station/<station_id>/nextStation` | Subscribe for the destination sent automatically after a successful review | No station request | Same topic, as plain text, e.g. `station02` |
 | `station/<station_id>/servertime` | Subscribe for time replies; publish a JSON time request | `{"request":"GET"}` | Same topic, as JSON |
+
+Request fields:
+
+| Field | JSON type | Used by |
+| --- | --- | --- |
+| `nfc_uuid` | Non-empty string | Required for login, start, complete, and review. Surrounding whitespace is trimmed. |
+| `review_score` | Integer `0`, `1`, or `2` | Required for review. `"2"`, `2.0`, `true`, and `null` are invalid. |
+| `request` | String `"GET"` | Status and server-time queries. The status query must contain only this field. |
+
+For example, a review request is:
+
+```json
+{"nfc_uuid":"AA BB CC 01","review_score":2}
+```
+
+The old bare UUID, semicolon-separated review, and plain `1` status request are
+no longer accepted. Update station publishers together with the backend.
+Extra action fields are ignored; they cannot override the station or action in
+the topic. Replies keep their existing formats: status/errors and time are JSON,
+and the backend's `nextStation` destination is still plain text.
 
 Stations have publish permission on the four action topics, and publish/subscribe
 permission on their own `status` and `servertime` topics. Stations only subscribe
@@ -155,7 +177,7 @@ stateDiagram-v2
 | `login` | `idle` | Send the scanned NFC UUID to register the team. The controller resolves the team name. |
 | `start` | `login` | Send an NFC UUID belonging to the logged-in team when your station starts its game. |
 | `complete` | `start` | Send an NFC UUID belonging to the same team when the game finishes. |
-| `review` | `complete` | Send `<NFC UUID>;<score>`, e.g. `AA BB CC 01;2`. The score must be exactly `0`, `1`, or `2`. |
+| `review` | `complete` | Send `{"nfc_uuid":"AA BB CC 01","review_score":2}`. The score must be a JSON integer: `0`, `1`, or `2`. |
 
 A team can complete each station **only once per run**. After Team-01 completes
 station01, playing station02 does not allow it to return and play station01 again.
@@ -236,16 +258,17 @@ The topic identifies the station. Successful replies have no `station_id`, NFC U
 request ID, timestamp, or review score. Login/review errors add `action`,
 `error_code`, and `message`, as documented in section 6.
 
-To ask for the current state without changing it, publish the single character
-`1` to `station/<station_id>/status`. This is plain text, not the JSON string `"1"`
-and not `{"request":"GET"}`. For an unused station, the reply is:
+To ask for the current state without changing it, publish exactly
+`{"request":"GET"}` to `station/<station_id>/status`. Only this JSON object is a
+status query; other messages on this shared topic are ignored to prevent reply
+loops. For an unused station, the reply is:
 
 ```json
 {"status":"idle","team_id":null}
 ```
 
 Because queries and replies use the same topic, your subscription can receive your
-own `1` message. Ignore it. Accept only JSON objects with the expected `status` and
+own `{"request":"GET"}` message. Ignore it. Accept only JSON objects with the expected `status` and
 `team_id` fields, and ignore retained messages. The controller's status replies use
 QoS 1 and `retain=false`; subscribing alone does not request a fresh status.
 
@@ -268,7 +291,7 @@ sequenceDiagram
     Note over B,C: Controller is running and subscribed to station/#
     S->>B: SUBSCRIBE station/station01/status (QoS 1)
     B-->>S: SUBACK
-    S->>B: PUBLISH station/station01/login: AA BB CC 01
+    S->>B: PUBLISH station/station01/login: {"nfc_uuid":"AA BB CC 01"}
     B->>C: Deliver login request
     C->>C: Check state and resolve NFC UUID
     C->>D: Lock station, check previous result, and save login state, result and event
@@ -284,12 +307,12 @@ Then perform these steps, waiting for the matching JSON reply before advancing:
 
 | Step | Publish topic | Exact request payload | Expected JSON reply on `station/station01/status` |
 | --- | --- | --- | --- |
-| Check initial state | `station/station01/status` | `1` | `{"status":"idle","team_id":null}` in a fresh database |
-| Scan the team's chip | `station/station01/login` | `AA BB CC 01` | `{"status":"login","team_id":"Team-01"}` |
-| Start the game | `station/station01/start` | `AA BB CC 01` | `{"status":"start","team_id":"Team-01"}` |
-| Finish the game | `station/station01/complete` | `AA BB CC 01` | `{"status":"complete","team_id":"Team-01"}` |
-| Submit the review | `station/station01/review` | `AA BB CC 01;2` | `{"status":"review","team_id":"Team-01"}`; then wait for the destination on `/nextStation` |
-| Check state after the handoff | `station/station01/status` | `1` | `{"status":"idle","team_id":null}` |
+| Check initial state | `station/station01/status` | `{"request":"GET"}` | `{"status":"idle","team_id":null}` in a fresh database |
+| Scan the team's chip | `station/station01/login` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"login","team_id":"Team-01"}` |
+| Start the game | `station/station01/start` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"start","team_id":"Team-01"}` |
+| Finish the game | `station/station01/complete` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"complete","team_id":"Team-01"}` |
+| Submit the review | `station/station01/review` | `{"nfc_uuid":"AA BB CC 01","review_score":2}` | `{"status":"review","team_id":"Team-01"}`; then wait for the destination on `/nextStation` |
+| Check state after the handoff | `station/station01/status` | `{"request":"GET"}` | `{"status":"idle","team_id":null}` |
 
 The end of the visit is automatic after the single review request:
 
@@ -300,7 +323,7 @@ sequenceDiagram
     participant D as PostgreSQL
 
     Note over S,C: Station already subscribes to status and nextStation
-    S->>C: station/station01/review (NFC UUID and score)
+    S->>C: station/station01/review: {"nfc_uuid":"AA BB CC 01","review_score":2}
     C->>C: Validate current team, state, and score
     C->>D: Save review state, result, score and event in one transaction
     D-->>C: Commit successful
@@ -357,12 +380,12 @@ as a successful action. For login/review, match `action` to the pending request,
 display `message`, and choose the next step using `error_code`. Keep the current
 game state and team assignment; do not store `error` as the station's state or
 wait for a destination after a rejected review. If local state is uncertain,
-publish `1` to `/status` and use the fresh reply to synchronize.
+publish `{"request":"GET"}` to `/status` and use the fresh reply to synchronize.
 
 | `error_code` | Meaning | What the station should do |
 | --- | --- | --- |
-| `INVALID_PAYLOAD` | Invalid UTF-8, empty NFC UUID, or missing review separator/UUID | Send plain `<NFC UUID>` for login or `<NFC UUID>;<score>` for review. |
-| `INVALID_REVIEW_SCORE` | Review score is not `0`, `1`, or `2` | Correct the score and retry. |
+| `INVALID_PAYLOAD` | Invalid UTF-8/JSON, a JSON value that is not an object, or missing/empty/non-string `nfc_uuid` | Send a JSON object with a non-empty `nfc_uuid` string. |
+| `INVALID_REVIEW_SCORE` | `review_score` is missing or is not an integer `0`, `1`, or `2` (strings, booleans, and decimals are rejected) | Correct the JSON score and retry. |
 | `UNKNOWN_TEAM` | NFC UUID is unmapped/invalid, or its team is missing from the database | Check the chip and ask the backend group to configure the team. |
 | `STATION_BUSY` | Login attempted while the station is not idle | Wait for the current team and handoff to finish. |
 | `INVALID_STATE` | Review attempted while the station is not at `complete` | Query status and follow the action order; do not restart an already accepted review. |
@@ -394,9 +417,9 @@ Assume station01 is at `complete` for Team-01. Subscribe to its `/status` and
 
 | Step | Topic and payload | Result |
 | --- | --- | --- |
-| Send an invalid score | Publish `AA BB CC 01;9` to `station/station01/review` | `/status` returns `error_code: "INVALID_REVIEW_SCORE"`; no database rows change and no destination is sent. |
-| Confirm current state | Publish `1` to `station/station01/status` | `{"status":"complete","team_id":"Team-01"}` |
-| Correct the score | Publish `AA BB CC 01;2` to `station/station01/review` | `{"status":"review","team_id":"Team-01"}`, followed by plain `station02` on `/nextStation`. |
+| Send an invalid score | Publish `{"nfc_uuid":"AA BB CC 01","review_score":9}` to `station/station01/review` | `/status` returns `error_code: "INVALID_REVIEW_SCORE"`; no database rows change and no destination is sent. |
+| Confirm current state | Publish `{"request":"GET"}` to `station/station01/status` | `{"status":"complete","team_id":"Team-01"}` |
+| Correct the score | Publish `{"nfc_uuid":"AA BB CC 01","review_score":2}` to `station/station01/review` | `{"status":"review","team_id":"Team-01"}`, followed by plain `station02` on `/nextStation`. |
 | Finish the handoff | No extra station request | After the broker acknowledges the destination, the controller commits `idle`. A fresh status query returns `{"status":"idle","team_id":null}`. |
 
 ```mermaid
@@ -405,14 +428,14 @@ sequenceDiagram
     participant C as Controller via MQTT
     participant D as PostgreSQL
     Note over S,D: Existing state is complete, Team-01
-    S->>C: review: AA BB CC 01#59;9
+    S->>C: review: {"nfc_uuid":"AA BB CC 01","review_score":9}
     C-->>S: status: error, action: review, error_code: INVALID_REVIEW_SCORE
     Note over C,D: State, result and events remain unchanged
-    S->>C: status: 1
+    S->>C: status: {"request":"GET"}
     C->>D: Read current state
     D-->>C: complete, Team-01
     C-->>S: status: complete, team_id: Team-01
-    S->>C: review: AA BB CC 01#59;2
+    S->>C: review: {"nfc_uuid":"AA BB CC 01","review_score":2}
     C->>D: Validate and commit review state, result and event
     D-->>C: Commit successful
     C-->>S: status: review, team_id: Team-01
@@ -485,7 +508,9 @@ Unix epoch and represents the same instant; it does not receive a timezone offse
 The service reads the server's system clock, so the server/Pi clock must be correct.
 Ignore your echoed `GET` request and only process objects with `request: "POST"`.
 Time queries do not change game state and do not produce a reply on `/status`.
-This service expects JSON objects, so do not send the plain `1` used by status queries.
+Both time and status queries use `{"request":"GET"}`; the topic determines which
+service responds. The time service replies with `request: "POST"`, while the game
+controller replies with `status` and `team_id`.
 Malformed messages, retained requests, and echoed replies are ignored. Replies
 use QoS 1 and `retain=false` and are sent only to the requesting topic. A server
 client can also request time if its MQTT credentials allow access to that topic;
@@ -549,7 +574,7 @@ The older [mqtt-test/main.py](mqtt-test/main.py) and [mqtt-test/test_pub.py](mqt
 use a different JSON action format. Their `backend/timestamp` routing topic and
 JSON `next_station` messages are different from the new station-specific
 `station/<station_id>/nextStation` topic and its plain-text payload. Use the topics
-and plain-text action payloads documented above for new station implementations.
+and JSON action payloads documented above for new station implementations.
 
 # Database schema
 
@@ -741,17 +766,17 @@ JSON on `/status`; the destination arrives as plain text on `/nextStation`.
 
 ```mermaid
 flowchart TD
-    A["Subscribe to station/station01/status and nextStation; wait for SUBACK"] --> B["Publish login: AA BB CC 01"]
+    A["Subscribe to station/station01/status and nextStation; wait for SUBACK"] --> B["Publish login JSON<br/>nfc_uuid = AA BB CC 01"]
     B --> C{"Known team, idle station,<br/>station not already completed by team?"}
     C -->|No| D["Return login error code<br/>Keep database state unchanged"]
     D --> E["Read status; correct request or choose an uncompleted station"]
     E --> B
     C -->|Yes| F["Commit login state, result and event<br/>Reply status: login"]
-    F --> G["Publish start: AA BB CC 01"]
+    F --> G["Publish start JSON<br/>nfc_uuid = AA BB CC 01"]
     G --> H["Commit start and start time<br/>Reply status: start"]
-    H --> I["Play game; publish complete: AA BB CC 01"]
+    H --> I["Play game, then publish complete JSON<br/>nfc_uuid = AA BB CC 01"]
     I --> J["Commit complete and completion time<br/>Reply status: complete"]
-    J --> K["Publish review: AA BB CC 01;2"]
+    J --> K["Publish review JSON<br/>nfc_uuid = AA BB CC 01, review_score = 2"]
     K --> L{"Correct team, complete state,<br/>valid payload and score?"}
     L -->|No| M["Return review error code<br/>Keep database state unchanged"]
     M --> N["Read status; correct review or wait for the required state"]

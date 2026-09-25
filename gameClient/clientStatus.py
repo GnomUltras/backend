@@ -33,12 +33,13 @@ def request_status(station_id):
             print("[ERROR] Status subscription rejected.", flush=True)
             finished.set()
             return
-        result = client.publish(topic, "1", qos=1, retain=False)
+        payload = json.dumps({"request": "GET"})
+        result = client.publish(topic, payload, qos=1, retain=False)
         if result.rc != mqtt.MQTT_ERR_SUCCESS:
             print(f"[ERROR] Could not query status: {result.rc}", flush=True)
             finished.set()
             return
-        print(f"[QUERY] Sent 1 to {topic}", flush=True)
+        print(f"[QUERY] Sent {payload} to {topic}", flush=True)
 
     def on_message(client, userdata, msg):
         nonlocal response
@@ -48,7 +49,7 @@ def request_status(station_id):
             status = json.loads(msg.payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return
-        # Ignore the echoed plain "1" and accept only JSON status replies.
+        # Ignore the echoed GET request and accept only JSON status replies.
         if not isinstance(status, dict) or "team_id" not in status:
             return
         if status.get("status") not in ("idle", "login", "start", "complete", "review", "error"):

@@ -19,7 +19,7 @@ pending_next_stations = {}
 
 
 ERROR_MESSAGES = {
-    "INVALID_PAYLOAD": "Send a non-empty UTF-8 NFC UUID; review requires <NFC UUID>;<score>.",
+    "INVALID_PAYLOAD": "Send a UTF-8 JSON object with a non-empty string field 'nfc_uuid'.",
     "INVALID_REVIEW_SCORE": "Review score must be 0, 1, or 2.",
     "UNKNOWN_TEAM": "The NFC UUID does not identify a configured team in the database.",
     "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
@@ -210,8 +210,18 @@ def on_message(client, userdata, msg):
             send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
         return
 
-    # JSON status replies on the shared topic must not query the DB or loop.
-    if action == "status" and msg.payload.strip() != b"1":
+    try:
+        request = json.loads(msg.payload.decode("utf-8"))
+        if not isinstance(request, dict):
+            raise ValueError("Request must be a JSON object.")
+    except (ValueError, UnicodeDecodeError):
+        # Status queries and replies share a topic: never answer malformed echoes.
+        if action != "status":
+            send_error(client, station_id, None, action, "INVALID_PAYLOAD")
+        return
+
+    # Only a GET request may query the DB; our own status/error replies must not loop.
+    if action == "status" and request != {"request": "GET"}:
         return
     if action == "status":
         print(f"[STATUS REQUEST] Received from {station_id} on {msg.topic}", flush=True)
@@ -234,29 +244,21 @@ def on_message(client, userdata, msg):
     if action not in ("login", "review") and action != NEXT_ACTION.get(current_state["status"]):
         return
 
-    try:
-        nfc_uuid = msg.payload.decode("utf-8").strip()
-        if not nfc_uuid:
-            raise ValueError("NFC UUID must not be empty.")
-        review_score = None
-        # Review payload: <nfc_uuid>;<score>. Other actions carry only the UUID.
-        if action == "review":
-            nfc_uuid, score = nfc_uuid.rsplit(";", 1)
-            nfc_uuid = nfc_uuid.strip()
-            if not nfc_uuid:
-                raise ValueError("NFC UUID must not be empty.")
-    except (ValueError, UnicodeDecodeError):
+    nfc_uuid = request.get("nfc_uuid")
+    if not isinstance(nfc_uuid, str) or not nfc_uuid.strip():
         send_error(client, station_id, None, action, "INVALID_PAYLOAD")
         return
+    nfc_uuid = nfc_uuid.strip()
 
     team_id = config.NFC_TEAMS.get(nfc_uuid)
+    review_score = None
     if action == "review":
-        if score.strip() not in ("0", "1", "2"):
+        review_score = request.get("review_score")
+        if type(review_score) is not int or review_score not in (0, 1, 2):
             # Do not expose an invalid configured team value in a JSON reply.
             known_team = team_id if isinstance(team_id, str) and team_id.strip() and len(team_id) <= 50 else None
             send_error(client, station_id, known_team, action, "INVALID_REVIEW_SCORE")
             return
-        review_score = int(score)
     # Only the logged-in team can advance the station until review succeeds.
     if action in ("start", "complete") and team_id != current_state["team_id"]:
         return

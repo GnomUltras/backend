@@ -24,11 +24,12 @@ def send_request(station_id, nfc_uuid, action="login", review_score=None):
     topic = f"station/{station_id}/{action}"
     status_topic = f"station/{station_id}/status"
     next_station_topic = f"station/{station_id}/nextStation"
-    payload = nfc_uuid.strip()
+    request = {"nfc_uuid": nfc_uuid.strip()}
     if action == "review":
         if type(review_score) is not int or review_score not in (0, 1, 2):
             raise ValueError("Review score must be 0, 1, or 2.")
-        payload = f"{payload};{review_score}"
+        request["review_score"] = review_score
+    payload = json.dumps(request)
     finished = Event()
     response = None
     next_station = None

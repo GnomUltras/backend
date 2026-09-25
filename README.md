@@ -59,7 +59,7 @@ flowchart TD
 
 This section describes the station protocol, including the new `nextStation`
 handoff after review, the [broker permissions](mosquitto/config/mosquitto.acl), and
-the separate [server-time service](mqtt-test/servertime/servertime.py). All examples use station 1.
+the separate [server-time script](gameController/servertime.py). All examples use station 1.
 Replace `station01` with your group's assigned station ID everywhere, including the MQTT username.
 
 The next-station handoff and automatic reset to `idle` are implemented in
@@ -332,16 +332,29 @@ the next-station handoff on reconnect; review and destination replies may be
 delivered again. This is broker acknowledgement, not confirmation that the Pi
 processed the destination.
 
-### 7. Server time (optional, separate service)
+### 7. Server time (Berlin time, included in the controller container)
 
-The time topic is handled by [mqtt-test/servertime/servertime.py](mqtt-test/servertime/servertime.py),
-not by the game controller. **The current Docker Compose stack does not start this
-service.** Ask the backend group to start it if your station needs server time.
-On the broker host, with `paho-mqtt` installed and `BROKER_IP` configured in that script:
+The separate [gameController/servertime.py](gameController/servertime.py) script
+starts automatically alongside the game controller in the **same container**.
+It uses its own MQTT connection and network thread, with client ID
+`<MQTT_CLIENT_ID>_servertime`, and shares the controller's broker settings and
+credentials. No extra Compose service is needed. Rebuild to apply the change:
 
 ```sh
-python mqtt-test/servertime/servertime.py
+docker compose up -d --build game-controller
 ```
+
+For standalone local use, set `MQTT_HOST` to the broker's address in your environment
+(default: `127.0.0.1`) and run the script with Python 3.9+:
+
+```sh
+python -m pip install paho-mqtt==2.1.0 tzdata
+python gameController/servertime.py
+```
+
+Run only one time responder for a broker. The old
+`mqtt-test/servertime/servertime.py` is a legacy UTC example; do not run it alongside
+this service, or clients will receive replies from both.
 
 Subscribe to `station/station01/servertime`, wait for SUBACK, and publish this JSON
 object to the same topic with QoS 1 and `retain=false`:
@@ -353,13 +366,22 @@ object to the same topic with QoS 1 and `retain=false`:
 The service replies on that same topic with JSON in this form (example timestamp):
 
 ```json
-{"request":"POST","server_time":"2026-01-01T00:00:00Z","unix":1767225600}
+{"request":"POST","server_time":"2026-01-01T01:00:00+01:00","unix":1767225600}
 ```
 
-`server_time` is a UTC date/time string; `unix` is seconds since the Unix epoch.
+`server_time` is an ISO 8601 timestamp in **Europe/Berlin**, including its UTC
+offset: `+01:00` in winter (CET), `+02:00` in summer (CEST). The offset changes
+automatically using Python's [zoneinfo](https://docs.python.org/3/library/zoneinfo.html)
+timezone data, which is included in the container. `unix` is seconds since the
+Unix epoch and represents the same instant; it does not receive a timezone offset.
+The service reads the server's system clock, so the server/Pi clock must be correct.
 Ignore your echoed `GET` request and only process objects with `request: "POST"`.
 Time queries do not change game state and do not produce a reply on `/status`.
 This service expects JSON objects, so do not send the plain `1` used by status queries.
+Malformed messages, retained requests, and echoed replies are ignored. Replies
+use QoS 1 and `retain=false` and are sent only to the requesting topic. A server
+client can also request time if its MQTT credentials allow access to that topic;
+station clients should use their own assigned station topic as usual.
 
 ### 8. Try the protocol with the supplied clients
 
@@ -371,8 +393,9 @@ From the repository root, install their dependency:
 python -m pip install paho-mqtt==2.1.0
 ```
 
-Set `MQTT_HOST` near the top of both [clientStatus.py](gameClient/clientStatus.py)
-and [clientLogin.py](gameClient/clientLogin.py) to `"192.168.1.11"` for the server Pi,
+Set `MQTT_HOST` near the top of [clientStatus.py](gameClient/clientStatus.py),
+[clientLogin.py](gameClient/clientLogin.py), or [clientServertime.py](gameClient/clientServertime.py)
+to `"192.168.1.11"` for the server Pi,
 or `"localhost"` for a broker on your own machine. Then run:
 
 ```sh
@@ -381,6 +404,9 @@ python gameClient/clientStatus.py
 
 # Send one action; prompts ask for station ID, action, NFC UUID, and review score if needed.
 python gameClient/clientLogin.py
+
+# Request the server's Berlin timestamp; enter your station ID when prompted.
+python gameClient/clientServertime.py
 ```
 
 Run the action client once per step in the example visit. Its default NFC UUID is
@@ -398,7 +424,16 @@ After changing controller code or the ACL, rebuild the two services on the backe
 docker compose up -d --build mosquitto game-controller
 ```
 
-For a time-client example, see [servertimeReq.py](mqtt-test/servertime/servertimeReq.py).
+The [server-time client](gameClient/clientServertime.py) subscribes before sending
+`{"request":"GET"}`, ignores its echoed request and retained messages, then prints
+the server's Berlin timestamp and Unix timestamp and disconnects. It waits up to
+five seconds for a reply (`RESPONSE_TIMEOUT`) and exits with code 1 on failure.
+Example output:
+
+```text
+[BERLIN TIME] 2026-01-01T01:00:00+01:00
+[UNIX] 1767225600
+```
 
 The older [mqtt-test/main.py](mqtt-test/main.py) and [mqtt-test/test_pub.py](mqtt-test/test_pub.py)
 use a different JSON action format. Their `backend/timestamp` routing topic and

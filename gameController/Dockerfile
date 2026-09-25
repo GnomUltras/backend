@@ -5,7 +5,7 @@ ENV PYTHONUNBUFFERED=1 \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir paho-mqtt==2.1.0 psycopg2-binary==2.9.13
+RUN pip install --no-cache-dir paho-mqtt==2.1.0 psycopg2-binary==2.9.13 tzdata
 
 COPY . .
 

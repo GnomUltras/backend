@@ -2,6 +2,7 @@ import paho.mqtt.client as mqtt
 from paho.mqtt.enums import CallbackAPIVersion
 
 import config
+import servertime
 from gameLogic import init_game, on_connect, on_message, on_publish
 
 
@@ -15,13 +16,18 @@ def main():
     client.on_message = on_message
     client.on_publish = on_publish
 
+    time_client = None
     try:
+        time_client = servertime.start()
         client.connect(config.MQTT_HOST, config.MQTT_PORT, config.MQTT_KEEPALIVE)
         client.loop_forever()
     except KeyboardInterrupt:
         print("Game Controller stopped.", flush=True)
     finally:
         client.disconnect()
+        if time_client is not None:
+            time_client.disconnect()
+            time_client.loop_stop()
     return 0
 
 

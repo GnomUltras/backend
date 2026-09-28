@@ -33,7 +33,7 @@ services:
       retries: 5
 
   grafana:
-    image: grafana/grafana:latest
+    image: grafana/grafana:12.2.0
     container_name: grafana
     restart: unless-stopped
     depends_on:
@@ -44,8 +44,16 @@ services:
     environment:
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
+      POSTGRES_USER: ${POSTGRES_USER:-stationuser}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
+      POSTGRES_DB: ${POSTGRES_DB:-stations}
     volumes:
       - grafana-data:/var/lib/grafana
+    # Grafana configuration
+      - ./grafana/provisioning:/etc/grafana/provisioning
+    # dashboard JSON files
+      - ./grafana/dashboards:/var/lib/grafana/dashboards
+
     networks:
       - stack
 

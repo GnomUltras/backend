@@ -1,0 +1,10 @@
+{
+  "uid": "stationview",
+  "title": "Station View",
+  "tags": ["stations"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "panels": []
+}

@@ -75,6 +75,7 @@ flowchart TD
     Client -- "HTTP (Port 3000)" --> GF
 ```
 
+# Topics
 
 ## MQTT integration guide for station groups
 

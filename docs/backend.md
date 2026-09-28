@@ -69,6 +69,55 @@ for the new station states.
 | `results` | One result per team/round/station: `started_at`, `completed_at`, review, and result status. Earlier rounds remain available. |
 | `station_events` | Event history for Grafana: timestamp, station username (e.g. `station01`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
 
+### Table relationships
+
+`team_id` references **`team.name`**, not the scanned chip ID. Each result belongs
+to one team, round, and station. Events are independent historical snapshots;
+their team/station fields have no foreign keys.
+
+```mermaid
+erDiagram
+    team ||--o{ results : "name to team_id"
+    team |o--o{ station_state : "name to assigned team_id"
+    station ||--o{ results : "station_id"
+    station ||--o| station_state : "station_id"
+
+    team {
+        varchar id PK "Scanned chip ID"
+        varchar name UK "Team-01"
+    }
+    station {
+        varchar station_id PK "station01"
+        varchar name
+    }
+    station_state {
+        varchar station_id PK, FK
+        varchar team_id FK "Null when idle"
+        varchar status "Current station state"
+        integer round "Null when idle"
+        smallint review_score "Saved review awaiting handoff"
+        timestamp updated_at
+    }
+    results {
+        varchar team_id PK, FK "Team name"
+        integer round PK
+        varchar station_id PK, FK
+        varchar status "Latest accepted action"
+        timestamp started_at
+        timestamp completed_at
+        text review
+    }
+    station_events {
+        integer id PK
+        varchar station_id "Historical station ID"
+        varchar team_id "Historical team name"
+        integer round
+        varchar event_type "Accepted action"
+        smallint review_score
+        timestamp created_at
+    }
+```
+
 PostgreSQL is the source of truth for teams and their scanned identifiers.
 The resolved team name is used consistently in `team.name`,
 `results.team_id`, `station_state.team_id`, and `station_events.team_id`.
@@ -108,6 +157,37 @@ state, and writes state, result, and event in one transaction. The team lock als
 serializes round decisions when requests arrive at different stations. It refreshes
 `updated_at` on each state change and sends a success reply only after commit.
 Failed writes roll back together; duplicate or out-of-order actions add no event.
+
+### Commit before confirming an action
+
+Example: accepting `start`. The same transaction boundary applies to login and
+complete. Review also commits first, but its OK waits for the handoff below.
+
+```mermaid
+sequenceDiagram
+    participant M as MQTT broker
+    participant L as gameLogic.py
+    participant D as PostgreSQL via db.py
+    M->>L: /start with team_id
+    L->>D: Begin transaction; lock station row and read state
+    Note over L: Validate action order and assigned team
+    alt Request rejected
+        L->>D: Roll back; leave game data unchanged
+        L-->>M: /error ERROR with rejection details
+    else Request allowed
+        L->>D: Lock team; read result and database time
+        L->>D: Save result and started_at
+        L->>D: Set station_state to running; append start event
+        alt All writes and commit succeed
+            D-->>L: Committed
+            L-->>M: /status running and team name
+            L-->>M: /error OK for start
+        else Database operation fails
+            D-->>L: Roll back transaction; report failure
+            L-->>M: /error DATABASE_ERROR
+        end
+    end
+```
 
 ### Current state, results, and events
 
@@ -165,6 +245,32 @@ they are not the game state. An acknowledgement for an older review cannot
 release a newer visit. On reconnect, pending handoffs are found in the database.
 If PostgreSQL is unavailable, requests receive an error rather than an invented
 idle state; a failed handoff release stays in `reviewing` until a reconnect retries it.
+
+### Recovering an interrupted review
+
+On controller MQTT connection, PostgreSQL distinguishes a team still entering
+its rating from a review already saved. A score of **0 counts as saved**.
+
+```mermaid
+flowchart TD
+    C[Controller connects or reconnects to MQTT] --> R[Read configured stations in reviewing]
+    R --> Q{review_score is NULL?}
+    Q -->|Yes| W[Keep reviewing; wait for the team's review request]
+    Q -->|No: 0, 1, or 2| N[Publish nextStation; track MQTT message ID]
+    N --> A{Broker acknowledges delivery?}
+    A -->|Still waiting| P[Keep saved review and occupied station]
+    A -->|Publish or delivery fails| E[Report HANDOFF_ERROR; keep reviewing]
+    A -->|Yes| T{Same team, review, and updated_at?}
+    T -->|No| X[Ignore stale acknowledgement]
+    T -->|Yes| I[Transaction: set idle, clear occupancy, append idle event]
+    I --> K{Commit succeeds?}
+    K -->|No| E
+    K -->|Yes| O[Publish idle status and review OK]
+```
+
+A subsequent controller reconnect retries reviews still pending in the database.
+There is no stage timeout. Broker acknowledgement does not prove station receipt;
+once idle is committed, the destination is not replayed by a status query.
 
 At startup, the controller adds station names from `STATION_COUNT` and missing
 idle state rows. Existing occupied states, results, and database-managed team

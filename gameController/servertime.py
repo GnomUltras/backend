@@ -14,6 +14,7 @@ BERLIN = ZoneInfo("Europe/Berlin")
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
+    """Subscribe to time requests for all stations after each connection."""
     if reason_code != 0:
         print(f"[TIME SERVICE] Connection rejected: {reason_code}", flush=True)
         return
@@ -22,6 +23,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
+    """Answer a JSON GET with Berlin local time and the Unix timestamp."""
     parts = msg.topic.split("/")
     if msg.retain or len(parts) != 3 or parts[0] != "station" or not parts[1] or parts[2] != "servertime":
         return
@@ -33,6 +35,7 @@ def on_message(client, userdata, msg):
     if not isinstance(request, dict) or request.get("request") != "GET":
         return
 
+    # ZoneInfo applies Berlin's winter or summer offset automatically.
     now = datetime.now(BERLIN)
     response = {
         "request": "POST",
@@ -45,6 +48,7 @@ def on_message(client, userdata, msg):
 
 
 def create_client():
+    """Prepare a separate MQTT connection using the shared broker settings."""
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"{config.MQTT_CLIENT_ID}_servertime",
@@ -66,6 +70,7 @@ def start():
 
 
 def main():
+    """Run the time service on its own, without starting the game controller."""
     client = create_client()
     try:
         client.loop_forever(retry_first_connection=True)

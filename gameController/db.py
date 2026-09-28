@@ -10,7 +10,7 @@ STATE_COLUMNS = "station_id, team_id, status, review_score, updated_at"
 
 
 def init_db(team_ids, station_ids):
-    """Insert supplied catalog entries and missing state rows after Alembic."""
+    """Add missing teams, stations, and state rows after migrations, preserving progress."""
     try:
         with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
             with conn, conn.cursor() as cur:
@@ -47,7 +47,7 @@ def get_station_state(station_id):
 
 
 def get_station_states(status, station_ids):
-    """Read station rows matching the supplied filter."""
+    """Find stations in a given state, such as reviews awaiting a handoff on reconnect."""
     with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
         with conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
             cur.execute(
@@ -75,16 +75,19 @@ def station_transaction(station_id):
 
 
 def team_exists(cur, team_id):
+    """Check that the configured team has a database entry."""
     cur.execute("SELECT 1 FROM team WHERE id = %s", (team_id,))
     return cur.fetchone() is not None
 
 
 def get_timestamp(cur):
+    """Use the database clock for game timestamps."""
     cur.execute("SELECT clock_timestamp() AS now")
     return cur.fetchone()["now"]
 
 
 def get_result(cur, team_id, station_id):
+    """Read a team's progress at one station, including any completed visit."""
     cur.execute(
         "SELECT created_at, status, started_at, completed_at, review FROM results "
         "WHERE team_id = %s AND station_id = %s",
@@ -94,7 +97,7 @@ def get_result(cur, team_id, station_id):
 
 
 def save_result(cur, team_id, station_id, result):
-    """Persist the result values chosen by gameLogic."""
+    """Insert or update one team's result at a station within the current transaction."""
     cur.execute(
         """INSERT INTO results
                (team_id, station_id, created_at, status, started_at, completed_at, review)
@@ -109,6 +112,7 @@ def save_result(cur, team_id, station_id, result):
 
 
 def save_station_state(cur, station_id, team_id, status, review_score, timestamp):
+    """Update the station's current occupancy and return its new state."""
     cur.execute(
         f"""UPDATE station_state SET team_id = %s, status = %s,
                review_score = %s, updated_at = %s
@@ -119,6 +123,7 @@ def save_station_state(cur, station_id, team_id, status, review_score, timestamp
 
 
 def log_event(cur, station_id, team_id, event_type, review_score, timestamp):
+    """Append a transition to the event history used by the dashboard."""
     cur.execute(
         """INSERT INTO station_events (created_at, station_id, team_id, event_type, review_score)
            VALUES (%s, %s, %s, %s, %s)""",

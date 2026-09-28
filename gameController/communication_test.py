@@ -9,6 +9,7 @@ TOPIC = "station/+/test"
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
+    """Subscribe to communication checks for all stations after each connection."""
     if reason_code != 0:
         print(f"[TEST SERVICE] Connection rejected: {reason_code}", flush=True)
         return
@@ -16,6 +17,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
+    """Answer plain 1 with plain 2 on the requesting station's test topic."""
     parts = msg.topic.split("/")
     if msg.retain or len(parts) != 3 or parts[0] != "station" or not parts[1] or parts[2] != "test":
         return
@@ -29,6 +31,7 @@ def on_message(client, userdata, msg):
 
 
 def create_client():
+    """Prepare the test service's own connection using the shared broker settings."""
     client = mqtt.Client(
         mqtt.CallbackAPIVersion.VERSION2,
         client_id=f"{config.MQTT_CLIENT_ID}_communication_test",
@@ -50,6 +53,7 @@ def start():
 
 
 def main():
+    """Run communication checks independently of the game controller."""
     client = create_client()
     try:
         client.loop_forever(retry_first_connection=True)

@@ -6,7 +6,7 @@ and DB_HOST=postgres.
 
 import os
 
-# MQTT
+# Broker settings shared by the controller, time service, and communication test.
 MQTT_HOST = os.getenv("MQTT_HOST", "127.0.0.1")
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_USER = os.getenv("MQTT_USER", "backend")
@@ -15,7 +15,7 @@ MQTT_TOPIC = os.getenv("MQTT_TOPIC", "station/#")
 MQTT_CLIENT_ID = os.getenv("MQTT_CLIENT_ID", "game_controller")
 MQTT_KEEPALIVE = int(os.getenv("MQTT_KEEPALIVE", "60"))
 
-# PostgreSQL
+# Database connection used for persistent station state, results, and event history.
 DB_CONFIG = {
     "host": os.getenv("DB_HOST", "127.0.0.1"),
     "port": int(os.getenv("DB_PORT", "5432")),
@@ -25,10 +25,11 @@ DB_CONFIG = {
     "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
 }
 
-# Game
+# Creates station IDs from station01 up to this count, also used for nextStation routing.
 STATION_COUNT = int(os.getenv("STATION_COUNT", "5"))
 
 # Example NFC UUIDs for local testing. Replace these with the actual chip IDs.
+# Stations send the UUID; the controller looks up the matching team here.
 NFC_TEAMS = {
     "AA BB CC 01": "Team-01",
     "AA BB CC 02": "Team-02",

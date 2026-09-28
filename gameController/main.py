@@ -8,6 +8,7 @@ from gameLogic import init_game, on_connect, on_message, on_publish
 
 
 def main():
+    """Initialize the game and run the controller, time service, and test service."""
     if not init_game():
         return 1
 
@@ -20,6 +21,7 @@ def main():
     time_client = None
     test_client = None
     try:
+        # Helpers use background threads; the main loop handles game actions.
         time_client = servertime.start()
         test_client = communication_test.start()
         client.connect(config.MQTT_HOST, config.MQTT_PORT, config.MQTT_KEEPALIVE)
@@ -27,6 +29,7 @@ def main():
     except KeyboardInterrupt:
         print("Game Controller stopped.", flush=True)
     finally:
+        # Stop the helper threads as well as the controller's MQTT connection.
         client.disconnect()
         if test_client is not None:
             test_client.disconnect()

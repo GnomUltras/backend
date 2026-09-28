@@ -6,6 +6,8 @@ import config
 import db
 
 
+# A visit follows idle -> login -> start -> complete -> review.
+# The station returns to idle after the broker acknowledges nextStation.
 NEXT_ACTION = {
     "idle": "login",
     "login": "start",
@@ -47,11 +49,12 @@ class StationAlreadyCompletedError(RequestRejectedError):
 
 
 def configured_station_ids():
+    """Build the station names used in MQTT topics and database rows."""
     return [f"station{number:02d}" for number in range(1, config.STATION_COUNT + 1)]
 
 
 def init_game():
-    """Validate game configuration and supply the database's initial catalog."""
+    """Validate team names and add missing teams and stations without resetting progress."""
     names = list(config.NFC_TEAMS.values())
     if any(not isinstance(name, str) or not name.strip() or len(name) > 50 for name in names):
         print("[ERROR] Configured team names must contain 1 to 50 characters.", flush=True)
@@ -60,7 +63,7 @@ def init_game():
 
 
 def change_station_state(station_id, team_id, action, review_score=None, expected_updated_at=None):
-    """Check the locked current state and decide all changes before committing."""
+    """Validate a transition and save the result, station state, and event together."""
     with db.station_transaction(station_id) as (cur, state):
         if state is None:
             if action in ("login", "review"):
@@ -87,6 +90,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
                 raise RequestRejectedError("UNKNOWN_TEAM")
             return None
         if action == "login":
+            # Completed results stay saved after leaving, preventing replays in this run.
             previous_result = db.get_result(cur, team_id, station_id)
             if previous_result is not None and (
                 previous_result["completed_at"] is not None
@@ -106,6 +110,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             if result is None:
                 raise IntegrityError("The occupied station has no matching result.")
             result["status"] = action
+            # Play time runs from start to complete; review adds the team's score.
             if action == "start":
                 result["started_at"] = timestamp
             elif action == "complete":
@@ -116,6 +121,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             db.save_result(cur, team_id, station_id, result)
 
         score = review_score if action == "review" else None
+        # Freeing a station clears its team assignment but keeps the team's result.
         new_state = db.save_station_state(
             cur, station_id, None if action == "idle" else team_id, action, score, timestamp
         )
@@ -126,6 +132,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
 
 
 def on_connect(client, userdata, flags, reason_code, properties):
+    """Subscribe to station messages and resume unfinished review handoffs."""
     if reason_code == 0:
         print("Game Controller running. Waiting for station updates...", flush=True)
         client.subscribe(config.MQTT_TOPIC, qos=1)
@@ -142,6 +149,7 @@ def on_connect(client, userdata, flags, reason_code, properties):
 
 
 def send_status(client, station_id, team_id, status, *, action=None, error_code=None):
+    """Publish a JSON status or error reply without changing database state."""
     payload = {"status": status, "team_id": team_id}
     if error_code is not None:
         payload.update(action=action, error_code=error_code, message=ERROR_MESSAGES[error_code])
@@ -154,13 +162,14 @@ def send_status(client, station_id, team_id, status, *, action=None, error_code=
 
 
 def send_error(client, station_id, team_id, action, error_code):
-    # Preserve the existing response format for actions outside login/review.
+    """Report a rejection; login and review replies include a code and message."""
     if action in ("login", "review"):
         return send_status(client, station_id, team_id, "error", action=action, error_code=error_code)
     return send_status(client, station_id, team_id, "error")
 
 
 def send_next_station(client, state):
+    """Send the next destination and track its delivery before releasing the station."""
     station_id = state["station_id"]
     # Temporary routing rule: advance one station and wrap around at the end.
     stations = configured_station_ids()
@@ -175,6 +184,7 @@ def send_next_station(client, state):
 
 
 def on_publish(client, userdata, mid, reason_code, properties):
+    """Return a reviewed station to idle after its destination reaches the broker."""
     state = pending_next_stations.pop(mid, None)
     if state is None:
         return
@@ -183,8 +193,8 @@ def on_publish(client, userdata, mid, reason_code, properties):
         print(f"[NEXT STATION ERROR] Broker rejected {station_id}: {reason_code}", flush=True)
         return
 
-    # QoS 1 is acknowledged by the broker here. Never block the MQTT callback
-    # with wait_for_publish(), which needs this same network loop to continue.
+    # This confirms broker receipt, not that the station processed the destination.
+    # wait_for_publish() would block the same network loop needed to receive the ACK.
     try:
         new_state = change_station_state(
             station_id, state["team_id"], "idle", expected_updated_at=state["updated_at"]
@@ -197,11 +207,13 @@ def on_publish(client, userdata, mid, reason_code, properties):
 
 
 def on_message(client, userdata, msg):
+    """Validate a station request, apply its game action, and send the response."""
     parts = msg.topic.split("/")
     if len(parts) != 3 or parts[0] != "station" or msg.retain:
         return
 
     station_id, action = parts[1], parts[2]
+    # Time and communication checks are handled by their own MQTT services.
     if action not in ("login", "start", "complete", "review", "status"):
         return
 
@@ -250,6 +262,7 @@ def on_message(client, userdata, msg):
         return
     nfc_uuid = nfc_uuid.strip()
 
+    # Stations send chip IDs; the controller resolves them to configured teams.
     team_id = config.NFC_TEAMS.get(nfc_uuid)
     review_score = None
     if action == "review":
@@ -271,6 +284,7 @@ def on_message(client, userdata, msg):
     try:
         new_state = change_station_state(station_id, team_id, action, review_score)
     except RequestRejectedError as exc:
+        # The transaction rolled back, so the group can correct the request and retry.
         print(f"[{action.upper()} REJECTED] {exc.error_code}: {exc}", flush=True)
         send_error(client, station_id, team_id, action, exc.error_code)
         return
@@ -281,7 +295,7 @@ def on_message(client, userdata, msg):
     if new_state is None:
         return
 
-    # Confirm only after the review checks, DB commit, and state update succeed.
+    # Confirm the saved action; a successful review then starts the next-station handoff.
     status_sent = send_status(client, station_id, team_id, action)
     print(f"[{action.upper()}] {team_id} at {station_id}.", flush=True)
     if action == "review" and status_sent:

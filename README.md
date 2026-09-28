@@ -66,7 +66,7 @@ registered spelling. The station ID comes from the topic, not the JSON.
 | `/status` | Review handoff finished, or query of a free station | `{"status":"idle","team_id":null}` |
 | `/error` | Request succeeded — **this topic also carries OK** | `{"return":"OK","action":"login","team_id":"Team-01"}` |
 | `/error` | Request failed | `{"return":"ERROR","action":"review","team_id":"Team-01","error_code":"INVALID_REVIEW_SCORE","message":"Review score must be 0, 1, or 2."}` |
-| `/nextStation` | Automatically after a saved review | `{"next_station":"station02","team_id":"Team-01"}` |
+| `/nextStation` | Automatically after a saved review | `{"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}` |
 
 `status` is always `idle`, `logged_in`, `running`, or `reviewing`.
 `action` identifies the request: `login`, `start`, `complete`, `review`, or `status`.
@@ -78,7 +78,7 @@ Stations **receive only** on `/error` and `/nextStation`; do not publish there.
 | Request | Required successful replies |
 | --- | --- |
 | `login` / `start` / `complete` | Expected `/status` **and** matching `/error` with `return: "OK"` |
-| `review` | `/nextStation` **and** `/status` with `idle` / null team **and** `/error` with review OK |
+| `review` | `/nextStation` routing result (including a null destination) **and** `/status` with `idle` / null team **and** `/error` with review OK |
 | Status query | Current `/status` **and** `/error` with `action: "status"`, `return: "OK"` |
 
 Keep **one request outstanding per station**. Match replies by `action` and team;
@@ -122,7 +122,7 @@ sequenceDiagram
     B-->>S: /error OK + action complete + Team-01
     S->>B: /review {"team_id":"Team-01","score":2}
     Note right of B: Save rating, then perform handoff
-    B-->>S: /nextStation {"next_station":"station02","team_id":"Team-01"}
+    B-->>S: /nextStation {"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}
     Note right of B: After broker ACK, save idle and clear team
     B-->>S: /status {"status":"idle","team_id":null}
     B-->>S: /error {"return":"OK","action":"review","team_id":"Team-01"}
@@ -137,12 +137,14 @@ login starts a new round.
 
 **`nextStation` is a message, not a state or a request.** It is sent to the
 **current station's** topic, e.g. `station/station01/nextStation`. The payload
-names the destination; it does not log the team into that destination.
+names the destination or reports that the round is complete. It does not log
+the team into the destination or reserve it.
 
 ```mermaid
 flowchart LR
     R[Valid review received] --> S[Save score; remain reviewing]
-    S --> N[Publish nextStation]
+    S --> D[Check saved round progress and live station occupancy]
+    D --> N[Publish nextStation routing result]
     N --> A[Broker acknowledges delivery]
     A --> I[Save idle; clear assigned team]
     I --> O[Publish idle status and review OK]
@@ -150,11 +152,25 @@ flowchart LR
 
 | Question | Current behavior |
 | --- | --- |
-| How is the destination chosen? | `station01 → station02 → station03 → station04 → station05 → station01` |
-| Is the destination guaranteed free? | No. Free-station selection is not implemented yet. |
+| How is the destination chosen? | First free, unfinished station after the current number, wrapping 05 → 01. Completed stations in this team's round are skipped. |
+| All remaining stations busy? | Send the team to the next unfinished, occupied station in that order, marked `queued`. Wait there until it becomes idle. |
+| All five reviews done? | `next_station: null`, `routing_status: "round_complete"`. Show that the round is finished. A later login starts a new round. |
+| Is the destination guaranteed free on arrival? | No reservation is made. `available` means idle when checked; another team may arrive first. Login still checks availability. |
 | Must the station send a separate acknowledgement? | No. The backend waits for the MQTT **broker's** acknowledgement, not proof that the station displayed the destination. |
 | When may the current station accept another team? | After confirmed `idle`; finish collecting the review replies first. |
-| What should the station do with the destination? | Display it to the finishing team. That team scans its chip at the destination to log in there. |
+| What should the station do with the destination? | Display it to the finishing team, including a waiting notice for `queued`. That team scans its chip at the destination when it is idle. |
+
+| `routing_status` | `next_station` | Meaning |
+| --- | --- | --- |
+| `available` | Station name | Free and unfinished when checked |
+| `queued` | Station name | Unfinished but currently occupied; go there and wait |
+| `round_complete` | `null` | All configured stations reviewed in this round |
+| `no_available_station` | `null` | No valid destination, e.g. missing station state or unfinished reviews elsewhere; contact the backend group |
+
+`round` identifies the finishing visit's round. Every routing outcome still ends
+with idle status and review OK after broker acknowledgement. A null destination
+is a valid response, not a reason to resend the review. Routing can be recomputed
+on controller reconnect while a handoff is pending, so a retried suggestion may change.
 
 ## 5. Reconnect and errors
 

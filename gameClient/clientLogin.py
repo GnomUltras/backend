@@ -36,7 +36,7 @@ def send_request(station_id, identifier, action="login", review_score=None):
     payload = json.dumps(request)
     finished = Event()
     response = None
-    next_station = None
+    routing = None
     acknowledgement = None
 
     def on_connect(client, userdata, flags, reason_code, properties):
@@ -63,7 +63,7 @@ def send_request(station_id, identifier, action="login", review_score=None):
         print(f"[REQUEST] Sent to {topic}: {payload}", flush=True)
 
     def on_message(client, userdata, msg):
-        nonlocal response, next_station, acknowledgement
+        nonlocal response, routing, acknowledgement
         if msg.retain:
             return
         try:
@@ -88,9 +88,21 @@ def send_request(station_id, identifier, action="login", review_score=None):
                 finished.set()
                 return
         elif msg.topic == next_station_topic and action == "review":
-            if payload.get("team_id") != identifier or not isinstance(payload.get("next_station"), str):
+            if payload.get("team_id") != identifier:
                 return
-            next_station = payload["next_station"]
+            destination = payload.get("next_station")
+            route_status = payload.get("routing_status")
+            if type(payload.get("round")) is not int or payload["round"] < 1:
+                return
+            if route_status in ("available", "queued"):
+                if not isinstance(destination, str) or not destination:
+                    return
+            elif route_status in ("round_complete", "no_available_station"):
+                if "next_station" not in payload or destination is not None:
+                    return
+            else:
+                return
+            routing = {key: payload[key] for key in ("next_station", "routing_status", "round")}
             print(f"[NEXT STATION] {json.dumps(payload)}", flush=True)
         elif msg.topic == status_topic:
             if payload.get("status") != ACTION_STATE[action] or "team_id" not in payload:
@@ -105,7 +117,7 @@ def send_request(station_id, identifier, action="login", review_score=None):
             return
         # Replies may arrive in any order. /status alone is not an acknowledgement.
         if (acknowledgement is not None and acknowledgement.get("return") == "OK"
-                and response is not None and (action != "review" or next_station)
+                and response is not None and (action != "review" or routing is not None)
                 and acknowledgement["team_id"] == (identifier if action == "review" else response["team_id"])):
             finished.set()
 
@@ -129,7 +141,7 @@ def send_request(station_id, identifier, action="login", review_score=None):
         return acknowledgement
     if response is None or acknowledgement is None:
         return None
-    return {**acknowledgement, **response, **({"next_station": next_station} if next_station else {})}
+    return {**acknowledgement, **response, **(routing or {})}
 
 
 def send_login(station_id, nfc_uuid):

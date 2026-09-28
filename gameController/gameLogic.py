@@ -176,20 +176,63 @@ def send_error(client, station_id, team_id, action, error_code, message=None):
     return send_return(client, station_id, team_id, action, error_code, message)
 
 
+def choose_next_station(station_id, team_id, round_number):
+    """Prefer a free unfinished station; otherwise suggest one where the team can queue."""
+    stations = configured_station_ids()
+    rows = db.get_routing_snapshot(team_id, round_number, stations)
+    if rows is None:
+        raise RequestRejectedError("UNKNOWN_TEAM")
+    completed = {
+        row["station_id"] for row in rows
+        if row["completed_at"] is not None or row["result_status"] in ("complete", "review")
+    }
+    reviewed = {
+        row["station_id"] for row in rows
+        if row["completed_at"] is not None and row["result_status"] == "review"
+    }
+    available = {
+        row["station_id"] for row in rows
+        if row["status"] == "idle" and row["team_id"] is None
+        and row["station_id"] not in completed
+    }
+    occupied = {
+        row["station_id"] for row in rows
+        if row["status"] in ("logged_in", "running", "reviewing") and row["team_id"] is not None
+        and row["station_id"] not in completed
+    }
+    # Preserve a predictable circular order. If every eligible station is busy,
+    # the team can wait at the next one. Never route to a missing state row or
+    # a completed/current station. Suggestions do not reserve destinations.
+    index = stations.index(station_id)
+    ordered = stations[index + 1:] + stations[:index]
+    destination = next((station for station in ordered if station in available), None)
+    routing_status = "available"
+    if destination is None:
+        destination = next((station for station in ordered if station in occupied), None)
+        routing_status = "queued" if destination else "no_available_station"
+    if set(stations).issubset(reviewed):
+        destination, routing_status = None, "round_complete"
+    return {"next_station": destination, "team_id": team_id,
+            "round": round_number, "routing_status": routing_status}
+
+
 def send_next_station(client, state):
     """Send the next destination and track its delivery before releasing the station."""
     station_id = state["station_id"]
-    # Temporary routing rule: advance one station and wrap around at the end.
-    stations = configured_station_ids()
-    next_station = stations[(stations.index(station_id) + 1) % len(stations)]
+    try:
+        routing = choose_next_station(station_id, state["team_id"], state["round"])
+    except (DatabaseError, RequestRejectedError) as exc:
+        print(f"[NEXT STATION ERROR] Could not choose a destination for {station_id}: {exc}", flush=True)
+        send_error(client, station_id, state["team_id"], "review", "HANDOFF_ERROR")
+        return
     topic = f"station/{station_id}/nextStation"
-    result = publish_json(client, station_id, "nextStation", {"next_station": next_station, "team_id": state["team_id"]})
+    result = publish_json(client, station_id, "nextStation", routing)
     if result.rc != 0:
         print(f"[NEXT STATION ERROR] Could not send to {topic}: {result.rc}", flush=True)
         send_error(client, station_id, state["team_id"], "review", "HANDOFF_ERROR")
         return
     pending_next_stations[result.mid] = state
-    print(f"[NEXT STATION] Queued {next_station} on {topic}; waiting for broker acknowledgement.", flush=True)
+    print(f"[NEXT STATION] Queued {routing['routing_status']} on {topic}; waiting for broker acknowledgement.", flush=True)
 
 
 def on_publish(client, userdata, mid, reason_code, properties):

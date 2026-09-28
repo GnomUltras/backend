@@ -65,6 +65,27 @@ def get_station_states(status, station_ids):
             return cur.fetchall()
 
 
+def get_routing_snapshot(team_id, round_number, station_ids):
+    """Read station occupancy and this team's results from one database snapshot."""
+    with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
+        conn.set_session(isolation_level="REPEATABLE READ", readonly=True)
+        with conn, conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute("SELECT name FROM team WHERE name = %s", (team_id,))
+            if cur.fetchone() is None:
+                return None
+            cur.execute(
+                """SELECT s.station_id, ss.status, ss.team_id,
+                          r.status AS result_status, r.completed_at
+                   FROM station AS s
+                   LEFT JOIN station_state AS ss ON ss.station_id = s.station_id
+                   LEFT JOIN results AS r ON r.station_id = s.station_id
+                       AND r.team_id = %s AND r."round" = %s
+                   WHERE s.station_id = ANY(%s)""",
+                (team_id, round_number, station_ids),
+            )
+            return cur.fetchall()
+
+
 @contextmanager
 def station_transaction(station_id):
     """Hold the row lock while gameLogic checks and writes a transition.

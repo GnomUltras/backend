@@ -87,15 +87,21 @@ def play_team(team_id, nfc_uuid, review_score):
         send_action(station_id, team_id, nfc_uuid, "complete")
         review = send_action(station_id, team_id, nfc_uuid, "review", review_score)
         destination = review.get("next_station")
-        if destination not in stations:
-            raise RuntimeError(f"Missing or invalid nextStation from {station_id}: {destination!r}")
 
         # Receiving nextStation can precede the controller's database update to idle.
         wait_for_idle(station_id)
         visited.add(station_id)
+        if review.get("routing_status") == "round_complete":
+            if len(visited) != len(stations) or destination is not None:
+                raise RuntimeError("Round finished unexpectedly; this simulation expects a fresh round.")
+            break
+        if destination not in stations or destination in visited:
+            raise RuntimeError(f"Missing or invalid nextStation from {station_id}: {destination!r}")
+        if review.get("routing_status") == "queued":
+            print(f"[QUEUE] {team_id}: waiting for {destination} to become idle.", flush=True)
         station_id = destination
 
-    # The final destination points into the next round; do not log in there yet.
+    # Round completion has no destination; a later login can start a new round.
     print(f"[TEAM DONE] {team_id}: completed all {STATION_COUNT} stations.", flush=True)
 
 

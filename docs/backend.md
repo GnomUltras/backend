@@ -149,8 +149,8 @@ historical snapshots. Grafana joins game records to `team.name`, not the chip ID
 `station_state` accepts only `idle`, `logged_in`, `running`, and `reviewing`.
 An idle station has no team; every other state requires a known team name.
 Only `reviewing` may have a saved score (0, 1, or 2) while its handoff is pending.
-No next-station destination is stored in this table. The planned routing logic will choose a free station when the team
-finishes; the current controller still uses the temporary sequential routing rule.
+No next-station destination is stored in this table. After a saved review, the
+controller selects a destination from current occupancy and that visit's saved round.
 State transitions and acknowledgement handling remain controller responsibilities.
 The controller locks the station and team rows, checks the action against the current
 state, and writes state, result, and event in one transaction. The team lock also
@@ -246,6 +246,47 @@ release a newer visit. On reconnect, pending handoffs are found in the database.
 If PostgreSQL is unavailable, requests receive an error rather than an invented
 idle state; a failed handoff release stays in `reviewing` until a reconnect retries it.
 
+### Choosing the next station
+
+`gameLogic.choose_next_station` makes the routing decision; `db.get_routing_snapshot`
+reads occupancy and results in a read-only, consistent PostgreSQL snapshot.
+No migration or in-memory game-state cache is needed.
+
+```mermaid
+flowchart TD
+    R[Read configured stations and results for this team and round] --> D{All configured stations reviewed?}
+    D -->|Yes| F[round_complete; destination null]
+    D -->|No| S[Exclude current station, missing state, and completed results]
+    S --> A{Any remaining station idle?}
+    A -->|Yes| N[available; choose first in circular station order]
+    A -->|No| B{Any remaining station occupied?}
+    B -->|Yes| Q[queued; choose first in circular station order]
+    B -->|No| E[no_available_station; destination null]
+    N --> P[Publish routing result, team name, and round]
+    Q --> P
+    F --> P
+    E --> P
+    P --> I[After broker ACK, commit idle and send review OK]
+```
+
+Circular order starts after the source station and wraps from station05 to
+station01. A result with `completed_at` set or status `complete`/`review` is
+excluded, matching the login replay checks. Round completion requires every
+configured station to have a completed, reviewed result. Earlier rounds do not
+block destinations in a later round.
+
+A busy fallback is explicitly marked `queued`; the team waits at that station.
+Routing creates no reservation or destination login. Two teams may receive the
+same suggestion, and availability can change before arrival; the login transaction
+still decides who gets the station. Offline detection is not implemented: `idle`
+means free in the database, not a confirmed live connection to a Pi.
+
+All routing outcomes release the source after the broker acknowledges the routing
+message, so teams do not block each other by occupying finished stations. A
+routing database error instead returns `HANDOFF_ERROR` and preserves the saved
+review for recovery. Reconnect recovery recalculates the suggestion from current
+data using the original visit's round; it does not start the next round.
+
 ### Recovering an interrupted review
 
 On controller MQTT connection, PostgreSQL distinguishes a team still entering
@@ -256,7 +297,7 @@ flowchart TD
     C[Controller connects or reconnects to MQTT] --> R[Read configured stations in reviewing]
     R --> Q{review_score is NULL?}
     Q -->|Yes| W[Keep reviewing; wait for the team's review request]
-    Q -->|No: 0, 1, or 2| N[Publish nextStation; track MQTT message ID]
+    Q -->|No: 0, 1, or 2| N[Recalculate nextStation; publish and track MQTT message ID]
     N --> A{Broker acknowledges delivery?}
     A -->|Still waiting| P[Keep saved review and occupied station]
     A -->|Publish or delivery fails| E[Report HANDOFF_ERROR; keep reviewing]

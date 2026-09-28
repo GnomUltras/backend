@@ -45,7 +45,7 @@ def wait_for_idle(station_id):
         status = clientStatus.request_status(station_id)
         if status is None:
             raise RuntimeError(f"No status reply from {station_id}.")
-        if status["status"] == "error":
+        if status.get("return") == "ERROR":
             raise RuntimeError(f"{station_id}: {status.get('message', 'Status query rejected.')}")
         if status["status"] == "idle" and status["team_id"] is None:
             return
@@ -57,14 +57,14 @@ def wait_for_idle(station_id):
 
 def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
     """Stop on a rejected or missing reply rather than sending the next action."""
-    response = clientLogin.send_request(station_id, nfc_uuid, action, review_score)
+    response = clientLogin.send_request(station_id, nfc_uuid if action == "login" else team_id, action, review_score)
     if response is None:
         raise RuntimeError(f"{team_id} at {station_id}: no complete reply for {action}.")
-    if response.get("status") == "error":
+    if response.get("return") == "ERROR":
         code = response.get("error_code", "ERROR")
         message = response.get("message", "Request rejected.")
         raise RuntimeError(f"{team_id} at {station_id}: {code}: {message}")
-    if response.get("status") != action or response.get("team_id") != team_id:
+    if response.get("status") != clientLogin.ACTION_STATE[action] or response.get("team_id") != (None if action == "review" else team_id):
         raise RuntimeError(f"Unexpected reply for {team_id} at {station_id}: {response}")
     return response
 

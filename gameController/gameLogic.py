@@ -7,14 +7,11 @@ import config
 import db
 
 
-# A visit follows idle -> login -> start -> complete -> review.
-# The station returns to idle after the broker acknowledges nextStation.
-NEXT_ACTION = {
-    "idle": "login",
-    "login": "start",
-    "start": "complete",
-    "complete": "review",
-}
+# MQTT actions are transitions, not station states.
+NEXT_ACTION = {"idle": "login", "logged_in": "start", "running": "complete", "reviewing": "review"}
+# A saved review stays reviewing until the destination handoff releases it.
+ACTION_STATE = {"login": "logged_in", "start": "running", "complete": "reviewing", "review": "reviewing"}
+STATES = ("idle", "logged_in", "running", "reviewing")
 GAME_ACTIONS = ("login", "start", "complete", "review")
 
 # Only MQTT delivery bookkeeping is local. Game state always lives in PostgreSQL.
@@ -23,18 +20,19 @@ pending_next_stations = {}
 
 
 ERROR_MESSAGES = {
-    "INVALID_PAYLOAD": "Send a UTF-8 JSON object. Game actions require a non-empty string field 'nfc_uuid'.",
+    "INVALID_PAYLOAD": "Send a UTF-8 JSON object. Login requires 'uuid'; other actions require 'team_id'.",
     "INVALID_TOPIC": "Use station/<station_id>/<action> with exactly three topic levels.",
     "INVALID_ACTION": "Supported game requests are login, start, complete, review, and status.",
     "INVALID_STATUS_REQUEST": "Status queries must be exactly {\"request\":\"GET\"}.",
     "RETAINED_REQUEST": "Game requests must be published with retain=false.",
     "INVALID_REVIEW_SCORE": "Review score must be 0, 1, or 2.",
-    "UNKNOWN_TEAM": "The NFC UUID does not identify a configured team in the database.",
+    "UNKNOWN_TEAM": "The UUID is unmapped or the requested team is not configured in the database.",
     "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
     "INVALID_STATE": "This action is not allowed in the current state. Follow login, start, complete, review.",
     "TEAM_MISMATCH": "Only the team currently assigned to this station may advance its game.",
     "STATION_ALREADY_COMPLETED": "This team has already completed this station in this round.",
     "STATION_UNAVAILABLE": "The station is not configured or its database state is missing.",
+    "HANDOFF_ERROR": "The review is saved, but destination delivery or station release failed. Query status; the handoff resumes on controller reconnect.",
     "DATABASE_ERROR": "The database operation failed. Query status and retry when available.",
 }
 
@@ -60,12 +58,8 @@ def configured_station_ids():
 
 
 def init_game():
-    """Validate team names and add missing teams and stations without resetting progress."""
-    names = list(config.NFC_TEAMS.values())
-    if any(not isinstance(name, str) or not name.strip() or len(name) > 50 for name in names):
-        print("[ERROR] Configured team names must contain 1 to 50 characters.", flush=True)
-        return False
-    return db.init_db(sorted(set(names)), configured_station_ids())
+    """Initialize stations without resetting progress or changing database-managed teams."""
+    return db.init_db(configured_station_ids())
 
 
 def change_station_state(station_id, team_id, action, review_score=None, expected_updated_at=None):
@@ -77,13 +71,15 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             raise RequestRejectedError("STATION_UNAVAILABLE")
         if action == "idle":
             # An old MQTT acknowledgement must never release a later visit.
-            if (state["status"] != "review" or state["team_id"] != team_id
+            if (state["status"] != "reviewing" or state["review_score"] is None or state["team_id"] != team_id
                     or state["updated_at"] != expected_updated_at):
                 return None
         elif NEXT_ACTION.get(state["status"]) != action:
             raise RequestRejectedError("STATION_BUSY" if action == "login" else "INVALID_STATE")
         elif action != "login" and state["team_id"] != team_id:
             raise RequestRejectedError("TEAM_MISMATCH")
+        if action == "review" and state["review_score"] is not None:
+            raise RequestRejectedError("INVALID_STATE", "The review is already saved; the next-station handoff is pending.")
         if action == "review" and (type(review_score) is not int or review_score not in (0, 1, 2)):
             raise RequestRejectedError("INVALID_REVIEW_SCORE")
 
@@ -130,7 +126,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
         score = review_score if action == "review" else None
         # Freeing a station clears its team assignment but keeps the team's result.
         new_state = db.save_station_state(
-            cur, station_id, None if action == "idle" else team_id, action, score, timestamp,
+            cur, station_id, None if action == "idle" else team_id, "idle" if action == "idle" else ACTION_STATE[action], score, timestamp,
             None if action == "idle" else round_number,
         )
         db.log_event(cur, station_id, team_id, action, score, timestamp, round_number)
@@ -147,8 +143,8 @@ def on_connect(client, userdata, flags, reason_code, properties):
         # Re-send interrupted handoffs. Stations must tolerate duplicate replies.
         pending_next_stations.clear()
         try:
-            for state in db.get_station_states("review", configured_station_ids()):
-                if send_status(client, state["station_id"], state["team_id"], "review"):
+            for state in db.get_station_states("reviewing", configured_station_ids()):
+                if state["review_score"] is not None:
                     send_next_station(client, state)
         except DatabaseError as exc:
             print(f"[DB ERROR] Could not resume review handoffs: {exc}", flush=True)
@@ -156,22 +152,28 @@ def on_connect(client, userdata, flags, reason_code, properties):
         print(f"Connection failed: {reason_code}", flush=True)
 
 
-def send_status(client, station_id, team_id, status, *, action=None, error_code=None):
-    """Publish a JSON status or error reply without changing database state."""
-    payload = {"status": status, "team_id": team_id}
-    if error_code is not None:
-        payload.update(action=action, error_code=error_code, message=ERROR_MESSAGES[error_code])
-    result = client.publish(f"station/{station_id}/status", json.dumps(payload), qos=1, retain=False)
-    if result.rc == 0:
-        print(f"[STATUS RESPONSE] Sent to {station_id}: {json.dumps(payload)}", flush=True)
-    else:
-        print(f"[STATUS ERROR] Could not send response to {station_id}: {result.rc}", flush=True)
-    return result.rc == 0
+def publish_json(client, station_id, topic, payload):
+    result = client.publish(f"station/{station_id}/{topic}", json.dumps(payload), qos=1, retain=False)
+    label = "RETURN" if topic == "error" else topic.upper()
+    print(f"[{label}] {station_id}: {json.dumps(payload)} (publish rc={result.rc})", flush=True)
+    return result
 
 
-def send_error(client, station_id, team_id, action, error_code):
-    """Report every rejected game request with a consistent code and message."""
-    return send_status(client, station_id, team_id, "error", action=action, error_code=error_code)
+def send_status(client, station_id, team_id, status):
+    """Only actual station states are published on /status."""
+    return publish_json(client, station_id, "status", {"status": status, "team_id": team_id}).rc == 0
+
+
+def send_return(client, station_id, team_id, action, error_code=None, message=None):
+    """Every handled request receives OK or ERROR on the /error response topic."""
+    payload = {"return": "ERROR" if error_code else "OK", "action": action, "team_id": team_id}
+    if error_code:
+        payload.update(error_code=error_code, message=message or ERROR_MESSAGES[error_code])
+    return publish_json(client, station_id, "error", payload).rc == 0
+
+
+def send_error(client, station_id, team_id, action, error_code, message=None):
+    return send_return(client, station_id, team_id, action, error_code, message)
 
 
 def send_next_station(client, state):
@@ -181,9 +183,10 @@ def send_next_station(client, state):
     stations = configured_station_ids()
     next_station = stations[(stations.index(station_id) + 1) % len(stations)]
     topic = f"station/{station_id}/nextStation"
-    result = client.publish(topic, next_station, qos=1, retain=False)
+    result = publish_json(client, station_id, "nextStation", {"next_station": next_station, "team_id": state["team_id"]})
     if result.rc != 0:
         print(f"[NEXT STATION ERROR] Could not send to {topic}: {result.rc}", flush=True)
+        send_error(client, station_id, state["team_id"], "review", "HANDOFF_ERROR")
         return
     pending_next_stations[result.mid] = state
     print(f"[NEXT STATION] Queued {next_station} on {topic}; waiting for broker acknowledgement.", flush=True)
@@ -197,6 +200,7 @@ def on_publish(client, userdata, mid, reason_code, properties):
     station_id = state["station_id"]
     if reason_code.is_failure:
         print(f"[NEXT STATION ERROR] Broker rejected {station_id}: {reason_code}", flush=True)
+        send_error(client, station_id, state["team_id"], "review", "HANDOFF_ERROR")
         return
 
     # This confirms broker receipt, not that the station processed the destination.
@@ -207,8 +211,11 @@ def on_publish(client, userdata, mid, reason_code, properties):
         )
     except (DatabaseError, RequestRejectedError) as exc:
         print(f"[DB ERROR] Could not release {station_id}: {exc}", flush=True)
+        send_error(client, station_id, state["team_id"], "review", "HANDOFF_ERROR")
         return
     if new_state is not None:
+        send_status(client, station_id, None, "idle")
+        send_return(client, station_id, state["team_id"], "review")
         print(f"[IDLE] {station_id}: next-station message acknowledged; ready for a new team.", flush=True)
 
 
@@ -225,7 +232,7 @@ def on_message(client, userdata, msg):
         send_error(client, station_id, None, action, "INVALID_TOPIC")
         return
     # These are independent services or controller output, not game requests.
-    if action in ("servertime", "test", "nextStation"):
+    if action in ("servertime", "test", "nextStation", "error"):
         return
     if action not in (*GAME_ACTIONS, "status"):
         send_error(client, station_id, None, action, "INVALID_ACTION")
@@ -239,10 +246,9 @@ def on_message(client, userdata, msg):
         send_error(client, station_id, None, action, "INVALID_PAYLOAD")
         return
 
-    # Status replies share the request topic. Recognize them before rejecting requests,
-    # including errors for unknown stations, to avoid an endless response loop.
+    # Status replies share the request topic. Ignore them to avoid response loops.
     if (action == "status" and "request" not in request and "team_id" in request
-            and request.get("status") in ("idle", *GAME_ACTIONS, "error")):
+            and request.get("status") in STATES):
         return
     if msg.retain:
         send_error(client, station_id, None, action, "RETAINED_REQUEST")
@@ -266,27 +272,26 @@ def on_message(client, userdata, msg):
             return
         # Status queries are read-only and independent of the allowed next action.
         send_status(client, station_id, current_state["team_id"], current_state["status"])
+        send_return(client, station_id, current_state["team_id"], action)
         return
 
-    nfc_uuid = request.get("nfc_uuid")
-    if not isinstance(nfc_uuid, str) or not nfc_uuid.strip():
+    identifier = request.get("uuid" if action == "login" else "team_id")
+    if not isinstance(identifier, str) or not identifier.strip():
         send_error(client, station_id, None, action, "INVALID_PAYLOAD")
         return
-    nfc_uuid = nfc_uuid.strip()
-
-    # Stations send chip IDs; the controller resolves them to configured teams.
-    team_id = config.NFC_TEAMS.get(nfc_uuid)
-    review_score = None
-    if action == "review":
-        review_score = request.get("review_score")
-        if type(review_score) is not int or review_score not in (0, 1, 2):
-            # Do not expose an invalid configured team value in a JSON reply.
-            known_team = team_id if isinstance(team_id, str) and team_id.strip() and len(team_id) <= 50 else None
-            send_error(client, station_id, known_team, action, "INVALID_REVIEW_SCORE")
-            return
-    if not isinstance(team_id, str) or not team_id.strip() or len(team_id) > 50:
-        print("[ERROR] NFC UUID has no valid team mapping.", flush=True)
+    # Only login scans the chip. Later actions use the resolved team from /status.
+    try:
+        team_id = db.get_team_name(identifier.strip()) if action == "login" else identifier.strip()
+    except DatabaseError as exc:
+        print(f"[DB ERROR] Could not resolve login at {station_id}: {exc}", flush=True)
+        send_error(client, station_id, None, action, "DATABASE_ERROR")
+        return
+    if not isinstance(team_id, str) or not team_id.strip() or len(team_id) > 255:
         send_error(client, station_id, None, action, "UNKNOWN_TEAM")
+        return
+    review_score = request.get("score") if action == "review" else None
+    if action == "review" and (type(review_score) is not int or review_score not in (0, 1, 2)):
+        send_error(client, station_id, team_id, action, "INVALID_REVIEW_SCORE")
         return
 
     try:
@@ -294,7 +299,7 @@ def on_message(client, userdata, msg):
     except RequestRejectedError as exc:
         # The transaction rolled back, so the group can correct the request and retry.
         print(f"[{action.upper()} REJECTED] {exc.error_code}: {exc}", flush=True)
-        send_error(client, station_id, team_id, action, exc.error_code)
+        send_error(client, station_id, team_id, action, exc.error_code, str(exc))
         return
     except DatabaseError as exc:
         print(f"[DB ERROR] Could not save {action} for {station_id}: {exc}", flush=True)
@@ -303,8 +308,10 @@ def on_message(client, userdata, msg):
     if new_state is None:
         return
 
-    # Confirm the saved action; a successful review then starts the next-station handoff.
-    status_sent = send_status(client, station_id, team_id, action)
-    print(f"[{action.upper()}] {team_id} at {station_id}.", flush=True)
-    if action == "review" and status_sent:
+    # Review success is confirmed after the handoff and committed reset to idle.
+    if action == "review":
         send_next_station(client, new_state)
+    else:
+        send_status(client, station_id, new_state["team_id"], new_state["status"])
+        send_return(client, station_id, team_id, action)
+    print(f"[{action.upper()}] {team_id} at {station_id}.", flush=True)

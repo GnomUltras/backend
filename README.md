@@ -234,8 +234,9 @@ database; it is not included in the MQTT status reply.
 
 The station stays occupied by the logged-in team through `login`, `start`,
 `complete`, and the review handoff. A new login while occupied receives
-`STATION_BUSY`; an out-of-order review receives `INVALID_STATE`. Out-of-order
-`start`/`complete` requests remain silently ignored.
+`STATION_BUSY`; out-of-order `start`, `complete`, and `review` requests receive
+`INVALID_STATE`. A different known team receives `TEAM_MISMATCH` when attempting
+the next action for an occupied station.
 A successful review finishes the visit in this order:
 
 1. Validate the review and save it in PostgreSQL.
@@ -298,13 +299,15 @@ and the new state is set, the controller automatically publishes a JSON status r
 | `team_id` | The resolved team name, or JSON `null` if no team is assigned/identified |
 
 The topic identifies the station. Successful replies have no `station_id`, NFC UUID,
-request ID, timestamp, or review score. Login/review errors add `action`,
+request ID, timestamp, or review score. All game request errors add `action`,
 `error_code`, and `message`, as documented in section 6.
 
 To ask for the current state without changing it, publish exactly
 `{"request":"GET"}` to `station/<station_id>/status`. Only this JSON object is a
-status query; other messages on this shared topic are ignored to prevent reply
-loops. For an unused station, the reply is:
+status query. Invalid queries receive `INVALID_STATUS_REQUEST`; invalid UTF-8,
+JSON, or non-object payloads receive `INVALID_PAYLOAD`. Recognizable status/error
+replies are ignored by the controller to prevent response loops. For an unused
+station, the reply is:
 
 ```json
 {"status":"idle","team_id":null}
@@ -391,8 +394,8 @@ broker delivery; use the JSON reply to confirm that the controller accepted the 
 
 ### 6. Errors, timeouts, and reconnects
 
-Rejected `login` and `review` requests receive an error on the station's `/status`
-topic. For example, an invalid review score returns:
+Rejected `login`, `start`, `complete`, `review`, and status queries receive an error
+on the station's `/status` topic. For example, an invalid review score returns:
 
 ```json
 {
@@ -405,13 +408,14 @@ topic. For example, an invalid review score returns:
 ```
 
 Use `error_code` in your station logic; `message` is readable text for display.
-`action` identifies the rejected request. `team_id` is the requesting team when
+`action` identifies the rejected request (or is `null` if the topic has no action).
+`team_id` is the requesting team when
 known, otherwise `null`; it does not replace the station's current team.
-Successful status replies retain their existing two-field format. Errors for
-`start`, `complete`, and status queries retain the older `status`/`team_id` format.
+Successful status replies retain their existing two-field format. Every game
+request error uses the five-field format above, including status-query errors.
 
-**Errors are MQTT replies, never database states or events.** A rejected login or
-review leaves `station_state`, `results`, and `station_events` unchanged. Checks
+**Errors are MQTT replies, never database states or events.** A rejected request
+leaves `station_state`, `results`, and `station_events` unchanged. Checks
 that depend on station state run under the database transaction lock. Database
 write failures roll back the transaction rather than saving a partial result.
 For example, an invalid review leaves the station at `complete`, allowing the
@@ -419,7 +423,7 @@ same team to correct its score and retry. A rejected login leaves the previous
 team and state intact. Error replies never trigger a next-station handoff.
 
 In your station application, handle `status: "error"` before treating a message
-as a successful action. For login/review, match `action` to the pending request,
+as a successful action. Match `action` to the pending request,
 display `message`, and choose the next step using `error_code`. Keep the current
 game state and team assignment; do not store `error` as the station's state or
 wait for a destination after a rejected review. If local state is uncertain,
@@ -427,26 +431,41 @@ publish `{"request":"GET"}` to `/status` and use the fresh reply to synchronize.
 
 | `error_code` | Meaning | What the station should do |
 | --- | --- | --- |
-| `INVALID_PAYLOAD` | Invalid UTF-8/JSON, a JSON value that is not an object, or missing/empty/non-string `nfc_uuid` | Send a JSON object with a non-empty `nfc_uuid` string. |
+| `INVALID_PAYLOAD` | Invalid UTF-8/JSON, a JSON value that is not an object, or missing/empty/non-string `nfc_uuid` for a game action | Send a valid JSON object; actions require `nfc_uuid`, while status queries use `{"request":"GET"}`. |
+| `INVALID_TOPIC` | The topic does not have exactly three non-empty levels | Use `station/<station_id>/<action>`. A reply requires a recognizable station ID. |
+| `INVALID_ACTION` | Unsupported game action, including a station publishing `idle` | Use login, start, complete, review, or status. Idle is managed by the controller. |
+| `INVALID_STATUS_REQUEST` | A JSON object on `/status` is neither the exact GET request nor a recognizable reply | Query with exactly `{"request":"GET"}`. |
+| `RETAINED_REQUEST` | The request reached the controller with its retained flag set | Clear the stored retained request and publish future requests with `retain=false`. |
 | `INVALID_REVIEW_SCORE` | `review_score` is missing or is not an integer `0`, `1`, or `2` (strings, booleans, and decimals are rejected) | Correct the JSON score and retry. |
 | `UNKNOWN_TEAM` | NFC UUID is unmapped/invalid, or its team is missing from the database | Check the chip and ask the backend group to configure the team. |
 | `STATION_BUSY` | Login attempted while the station is not idle | Wait for the current team and handoff to finish. |
-| `INVALID_STATE` | Review attempted while the station is not at `complete` | Query status and follow the action order; do not restart an already accepted review. |
-| `TEAM_MISMATCH` | A known team tries to review another team's completed game | Submit the review using the team that played. |
+| `INVALID_STATE` | Start, complete, or review attempted in the wrong state, including duplicate actions | Query status and follow the action order; do not resend an action already accepted. |
+| `TEAM_MISMATCH` | A known team tries to start, complete, or review another team's game | Use the NFC UUID of the team that logged in. |
 | `STATION_ALREADY_COMPLETED` | This team has already completed this station in the round | Finish the remaining stations and reviews before starting another round. |
 | `STATION_UNAVAILABLE` | Station is outside the configured station list or its database state is missing | Check the station ID and backend initialization. |
 | `DATABASE_ERROR` | Reading or saving the requested action failed | Query status before retrying once the database is available. |
 
-If several checks fail, the reply reports the first error encountered. Only
-well-formed request topics delivered to the controller can receive these codes;
-broker authentication/ACL failures and an unavailable controller can still cause
-a client-side error or timeout instead.
+If several checks fail, the reply reports the first error encountered. A reply
+requires a topic beginning with `station/<station_id>`, where the ID contains
+1–50 letters, digits, underscores, or hyphens. Topics without a safe reply address
+are logged as `INVALID_TOPIC` instead. The broker must deliver the request first:
+the supplied ACL blocks unsupported topics, so those normally appear as broker
+permission failures rather than controller replies. Authentication/ACL failures
+and an unavailable controller can still cause a client-side error or timeout.
+
+The controller recognizes status/error replies on `/status` and ignores them,
+including its own errors for unknown stations. `nextStation` is an output topic;
+`servertime` and `test` remain independent services with their documented payloads.
+They are not interpreted as invalid game actions. The plain `1` / `2` communication
+test does not gain JSON error messages. In MQTT 3.1.1, live delivery of a retained
+publish may have its retained flag cleared by the broker; this error detects
+requests actually delivered with that flag, such as stored messages on reconnect.
 
 | Situation | Current controller behavior | What the station should do |
 | --- | --- | --- |
 | Review reply or next-station publish fails, the destination acknowledgement is missing, or saving the final `idle` event fails | Station remains in `review`; it is not released early | Query `status` and contact the backend group. The handoff is retried when the controller reconnects or restarts; duplicate delivery is possible. |
-| Wrong action order or wrong team for `start`/`complete` | Silently ignored; no reply | Query status and use the team that logged in. |
-| Malformed topic, unsupported action, or a message delivered with its retained flag set | Ignored by the controller; permissions may also prevent delivery | Check the topic, credentials, and `retain=false`. |
+| Wrong action order or wrong team for `start`/`complete` | Reply with `INVALID_STATE` or `TEAM_MISMATCH`; no database changes | Query status and use the team that logged in. |
+| Malformed topic, unsupported action, or a message delivered with its retained flag set | Reply with `INVALID_TOPIC`, `INVALID_ACTION`, or `RETAINED_REQUEST` when the request reaches the controller and has a reply address | Check the topic, credentials, and `retain=false`. |
 | Broker is reachable but controller is unavailable | No game status reply | Check controller availability with the backend group. |
 
 The review handoff happens **after** the review transaction succeeds. A delivery
@@ -923,6 +942,7 @@ flowchart TD
 ```
 
 Database write failures return an error and roll back the action transaction.
-Out-of-order or wrong-team `start`/`complete` requests remain silently ignored;
-the diagram shows their successful path. The controller does not publish an
+Out-of-order or wrong-team `start`/`complete` requests return `INVALID_STATE` or
+`TEAM_MISMATCH` without changing the database; the diagram shows their successful
+path. The controller does not publish an
 automatic idle status reply after handoff; query `/status` to read the new state.

@@ -1,4 +1,5 @@
 import json
+import re
 
 from psycopg2 import Error as DatabaseError, IntegrityError
 
@@ -14,6 +15,7 @@ NEXT_ACTION = {
     "start": "complete",
     "complete": "review",
 }
+GAME_ACTIONS = ("login", "start", "complete", "review")
 
 # Only MQTT delivery bookkeeping is local. Game state always lives in PostgreSQL.
 # MQTT message ID -> committed review snapshot awaiting acknowledgement.
@@ -21,12 +23,16 @@ pending_next_stations = {}
 
 
 ERROR_MESSAGES = {
-    "INVALID_PAYLOAD": "Send a UTF-8 JSON object with a non-empty string field 'nfc_uuid'.",
+    "INVALID_PAYLOAD": "Send a UTF-8 JSON object. Game actions require a non-empty string field 'nfc_uuid'.",
+    "INVALID_TOPIC": "Use station/<station_id>/<action> with exactly three topic levels.",
+    "INVALID_ACTION": "Supported game requests are login, start, complete, review, and status.",
+    "INVALID_STATUS_REQUEST": "Status queries must be exactly {\"request\":\"GET\"}.",
+    "RETAINED_REQUEST": "Game requests must be published with retain=false.",
     "INVALID_REVIEW_SCORE": "Review score must be 0, 1, or 2.",
     "UNKNOWN_TEAM": "The NFC UUID does not identify a configured team in the database.",
     "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
-    "INVALID_STATE": "Review is only allowed after the game has completed.",
-    "TEAM_MISMATCH": "Only the team currently assigned to this station may submit its review.",
+    "INVALID_STATE": "This action is not allowed in the current state. Follow login, start, complete, review.",
+    "TEAM_MISMATCH": "Only the team currently assigned to this station may advance its game.",
     "STATION_ALREADY_COMPLETED": "This team has already completed this station in this round.",
     "STATION_UNAVAILABLE": "The station is not configured or its database state is missing.",
     "DATABASE_ERROR": "The database operation failed. Query status and retry when available.",
@@ -64,31 +70,25 @@ def init_game():
 
 def change_station_state(station_id, team_id, action, review_score=None, expected_updated_at=None):
     """Validate a transition and save the result, station state, and event together."""
+    if action not in (*GAME_ACTIONS, "idle"):
+        raise RequestRejectedError("INVALID_ACTION")
     with db.station_transaction(station_id) as (cur, state):
         if state is None:
-            if action in ("login", "review"):
-                raise RequestRejectedError("STATION_UNAVAILABLE")
-            return None
+            raise RequestRejectedError("STATION_UNAVAILABLE")
         if action == "idle":
             # An old MQTT acknowledgement must never release a later visit.
             if (state["status"] != "review" or state["team_id"] != team_id
                     or state["updated_at"] != expected_updated_at):
                 return None
         elif NEXT_ACTION.get(state["status"]) != action:
-            if action in ("login", "review"):
-                raise RequestRejectedError("STATION_BUSY" if action == "login" else "INVALID_STATE")
-            return None
+            raise RequestRejectedError("STATION_BUSY" if action == "login" else "INVALID_STATE")
         elif action != "login" and state["team_id"] != team_id:
-            if action == "review":
-                raise RequestRejectedError("TEAM_MISMATCH")
-            return None
+            raise RequestRejectedError("TEAM_MISMATCH")
         if action == "review" and (type(review_score) is not int or review_score not in (0, 1, 2)):
             raise RequestRejectedError("INVALID_REVIEW_SCORE")
 
         if not db.lock_team(cur, team_id):
-            if action in ("login", "review"):
-                raise RequestRejectedError("UNKNOWN_TEAM")
-            return None
+            raise RequestRejectedError("UNKNOWN_TEAM")
         if action == "login":
             round_number = db.get_latest_round(cur, team_id)
             reviewed_stations = db.get_reviewed_stations(cur, team_id, round_number)
@@ -170,10 +170,8 @@ def send_status(client, station_id, team_id, status, *, action=None, error_code=
 
 
 def send_error(client, station_id, team_id, action, error_code):
-    """Report a rejection; login and review replies include a code and message."""
-    if action in ("login", "review"):
-        return send_status(client, station_id, team_id, "error", action=action, error_code=error_code)
-    return send_status(client, station_id, team_id, "error")
+    """Report every rejected game request with a consistent code and message."""
+    return send_status(client, station_id, team_id, "error", action=action, error_code=error_code)
 
 
 def send_next_station(client, state):
@@ -207,7 +205,7 @@ def on_publish(client, userdata, mid, reason_code, properties):
         new_state = change_station_state(
             station_id, state["team_id"], "idle", expected_updated_at=state["updated_at"]
         )
-    except DatabaseError as exc:
+    except (DatabaseError, RequestRejectedError) as exc:
         print(f"[DB ERROR] Could not release {station_id}: {exc}", flush=True)
         return
     if new_state is not None:
@@ -217,51 +215,57 @@ def on_publish(client, userdata, mid, reason_code, properties):
 def on_message(client, userdata, msg):
     """Validate a station request, apply its game action, and send the response."""
     parts = msg.topic.split("/")
-    if len(parts) != 3 or parts[0] != "station" or msg.retain:
+    # A malformed topic still gets an error if it contains a safe reply address.
+    if len(parts) < 2 or parts[0] != "station" or not re.fullmatch(r"[A-Za-z0-9_-]{1,50}", parts[1]):
+        print(f"[INVALID_TOPIC] Cannot route a reply for {msg.topic!r}.", flush=True)
         return
-
-    station_id, action = parts[1], parts[2]
-    # Time and communication checks are handled by their own MQTT services.
-    if action not in ("login", "start", "complete", "review", "status"):
+    station_id = parts[1]
+    action = parts[2] if len(parts) > 2 and parts[2] else None
+    if len(parts) != 3 or action is None:
+        send_error(client, station_id, None, action, "INVALID_TOPIC")
         return
-
-    if station_id not in configured_station_ids():
-        if action in ("login", "review"):
-            send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
+    # These are independent services or controller output, not game requests.
+    if action in ("servertime", "test", "nextStation"):
+        return
+    if action not in (*GAME_ACTIONS, "status"):
+        send_error(client, station_id, None, action, "INVALID_ACTION")
         return
 
     try:
         request = json.loads(msg.payload.decode("utf-8"))
         if not isinstance(request, dict):
             raise ValueError("Request must be a JSON object.")
-    except (ValueError, UnicodeDecodeError):
-        # Status queries and replies share a topic: never answer malformed echoes.
-        if action != "status":
-            send_error(client, station_id, None, action, "INVALID_PAYLOAD")
+    except (ValueError, UnicodeDecodeError, RecursionError):
+        send_error(client, station_id, None, action, "INVALID_PAYLOAD")
         return
 
-    # Only a GET request may query the DB; our own status/error replies must not loop.
+    # Status replies share the request topic. Recognize them before rejecting requests,
+    # including errors for unknown stations, to avoid an endless response loop.
+    if (action == "status" and "request" not in request and "team_id" in request
+            and request.get("status") in ("idle", *GAME_ACTIONS, "error")):
+        return
+    if msg.retain:
+        send_error(client, station_id, None, action, "RETAINED_REQUEST")
+        return
+    if station_id not in configured_station_ids():
+        send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
+        return
     if action == "status" and request != {"request": "GET"}:
+        send_error(client, station_id, None, action, "INVALID_STATUS_REQUEST")
         return
     if action == "status":
         print(f"[STATUS REQUEST] Received from {station_id} on {msg.topic}", flush=True)
-    try:
-        current_state = db.get_station_state(station_id)
+        try:
+            current_state = db.get_station_state(station_id)
+        except DatabaseError as exc:
+            print(f"[DB ERROR] Could not read {station_id}: {exc}", flush=True)
+            send_error(client, station_id, None, action, "DATABASE_ERROR")
+            return
         if current_state is None:
             send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
             return
-    except DatabaseError as exc:
-        print(f"[DB ERROR] Could not read {station_id}: {exc}", flush=True)
-        send_error(client, station_id, None, action, "DATABASE_ERROR")
-        return
-    # Status queries are read-only and independent of the allowed next action.
-    if action == "status":
+        # Status queries are read-only and independent of the allowed next action.
         send_status(client, station_id, current_state["team_id"], current_state["status"])
-        return
-
-    # Login/review are checked again under the transaction lock, with error codes.
-    # Keep the existing silent handling for out-of-order start/complete requests.
-    if action not in ("login", "review") and action != NEXT_ACTION.get(current_state["status"]):
         return
 
     nfc_uuid = request.get("nfc_uuid")
@@ -280,10 +284,6 @@ def on_message(client, userdata, msg):
             known_team = team_id if isinstance(team_id, str) and team_id.strip() and len(team_id) <= 50 else None
             send_error(client, station_id, known_team, action, "INVALID_REVIEW_SCORE")
             return
-    # Only the logged-in team can advance the station until review succeeds.
-    if action in ("start", "complete") and team_id != current_state["team_id"]:
-        return
-
     if not isinstance(team_id, str) or not team_id.strip() or len(team_id) > 50:
         print("[ERROR] NFC UUID has no valid team mapping.", flush=True)
         send_error(client, station_id, None, action, "UNKNOWN_TEAM")

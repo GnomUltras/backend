@@ -27,7 +27,7 @@ ERROR_MESSAGES = {
     "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
     "INVALID_STATE": "Review is only allowed after the game has completed.",
     "TEAM_MISMATCH": "Only the team currently assigned to this station may submit its review.",
-    "STATION_ALREADY_COMPLETED": "This team has already completed this station in this run.",
+    "STATION_ALREADY_COMPLETED": "This team has already completed this station in this round.",
     "STATION_UNAVAILABLE": "The station is not configured or its database state is missing.",
     "DATABASE_ERROR": "The database operation failed. Query status and retry when available.",
 }
@@ -42,7 +42,7 @@ class RequestRejectedError(ValueError):
 
 
 class StationAlreadyCompletedError(RequestRejectedError):
-    """The team's saved result prevents replaying this station in this run."""
+    """The team's saved result prevents replaying this station in this round."""
 
     def __init__(self, message=None):
         super().__init__("STATION_ALREADY_COMPLETED", message)
@@ -85,20 +85,27 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
         if action == "review" and (type(review_score) is not int or review_score not in (0, 1, 2)):
             raise RequestRejectedError("INVALID_REVIEW_SCORE")
 
-        if not db.team_exists(cur, team_id):
+        if not db.lock_team(cur, team_id):
             if action in ("login", "review"):
                 raise RequestRejectedError("UNKNOWN_TEAM")
             return None
         if action == "login":
-            # Completed results stay saved after leaving, preventing replays in this run.
-            previous_result = db.get_result(cur, team_id, station_id)
+            round_number = db.get_latest_round(cur, team_id)
+            reviewed_stations = db.get_reviewed_stations(cur, team_id, round_number)
+            # Reusing a chip starts a new round only after every station's review.
+            if set(configured_station_ids()).issubset(reviewed_stations):
+                round_number += 1
+            previous_result = db.get_result(cur, team_id, station_id, round_number)
             if previous_result is not None and (
                 previous_result["completed_at"] is not None
                 or previous_result["status"] in ("complete", "review")
             ):
                 raise StationAlreadyCompletedError(
-                    f"{team_id} has already completed {station_id} in this run."
+                    f"{team_id} has already completed {station_id} in round {round_number}."
                 )
+        else:
+            # A delayed handoff still belongs to the visit's original round.
+            round_number = state["round"]
         # Use one database timestamp after acquiring the lock for every write.
         timestamp = db.get_timestamp(cur)
         if action == "login":
@@ -106,7 +113,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             result = {"created_at": timestamp, "status": action,
                       "started_at": None, "completed_at": None, "review": None}
         elif action != "idle":
-            result = db.get_result(cur, team_id, station_id)
+            result = db.get_result(cur, team_id, station_id, round_number)
             if result is None:
                 raise IntegrityError("The occupied station has no matching result.")
             result["status"] = action
@@ -118,16 +125,17 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             elif action == "review":
                 result["review"] = str(review_score)
         if action != "idle":
-            db.save_result(cur, team_id, station_id, result)
+            db.save_result(cur, team_id, station_id, round_number, result)
 
         score = review_score if action == "review" else None
         # Freeing a station clears its team assignment but keeps the team's result.
         new_state = db.save_station_state(
-            cur, station_id, None if action == "idle" else team_id, action, score, timestamp
+            cur, station_id, None if action == "idle" else team_id, action, score, timestamp,
+            None if action == "idle" else round_number,
         )
-        db.log_event(cur, station_id, team_id, action, score, timestamp)
+        db.log_event(cur, station_id, team_id, action, score, timestamp, round_number)
     # The transaction has committed before an MQTT handler can send a reply.
-    print(f"[DB] {action}: {team_id} at {station_id}", flush=True)
+    print(f"[DB] {action}: {team_id} at {station_id}, round {round_number}", flush=True)
     return new_state
 
 

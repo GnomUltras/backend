@@ -556,7 +556,33 @@ python gameClient/clientServertime.py
 
 # Send plain 1 and wait for plain 2; enter your station ID when prompted.
 python gameClient/clientTest.py
+
+# Automatically play three teams, then an extra round with Team-01; no prompts.
+python gameClient/clientAutoPlay.py
 ```
+
+The [auto-play client](gameClient/clientAutoPlay.py) runs Team-01, Team-02, and
+Team-03 one after another. Each starts at station01 and sends `login`, `start`,
+`complete`, and `review` at all five stations, following the backend's
+`nextStation` replies. It waits for `idle` before login and after every handoff,
+then plays another full round with Team-01. On a fresh database, this gives
+Team-01 rounds 1 and 2, and Team-02 and Team-03 round 1 each.
+Edit `MQTT_HOST`, `TEAMS` (team names, registered UUIDs, and review scores),
+`STATION_COUNT`, and `PLAY_SECONDS` at the top of this script. The default play
+delay is zero so it quickly fills the database with **20 results and 100 events**
+(four full rounds, five stations, five events per visit including `idle`). It uses
+review scores 0, 1, and 2 for the three teams. Increase `PLAY_SECONDS` for longer
+recorded playing times. It uses the existing action and status clients with
+these settings.
+
+Run it with the controller and broker available and these teams ready to start
+a round. It creates real game results and events. With round tracking enabled,
+running it again after a successful run adds two more rounds for Team-01 and one
+more round each for Team-02 and Team-03. Round numbers continue from saved history.
+An error or timeout stops the script with exit code 1; it does not reset or resume
+an unfinished round. A busy station is polled for up to 30 seconds (plus any
+in-flight status request). Avoid operating the same station from another client
+during the simulation because replies have no request IDs.
 
 Run the action client once per step in the example visit. Its default NFC UUID is
 `AA BB CC 01`; use a UUID registered by the backend group for real hardware.

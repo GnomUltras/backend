@@ -19,6 +19,7 @@ MQTT-broker: mosquitto
   - [Guide contents](#guide-contents)
   - [MQTT integration guide for station groups](#mqtt-integration-guide-for-station-groups)
     - [1. Connect to the broker](#1-connect-to-the-broker)
+      - [Identify devices in broker logs](#identify-devices-in-broker-logs)
     - [2. Topic reference](#2-topic-reference)
     - [3. Game actions and their required order](#3-game-actions-and-their-required-order)
     - [4. Status replies and read-only queries](#4-status-replies-and-read-only-queries)
@@ -112,6 +113,36 @@ The username determines topic permissions. For example, `station02` can publish
 actions for `station/station02/...` and read its own replies. Use the exact spelling:
 `station01`, not `station1`, `1`, or `station-01`. Stations do not need the `backend`
 account or a subscription to `station/#`.
+
+#### Identify devices in broker logs
+
+The broker logs connection IPs, MQTT client IDs, usernames, and message topics.
+Rebuild it to apply the logging configuration, then follow its output:
+
+```sh
+docker compose up -d --build mosquitto
+docker compose logs -f mosquitto
+```
+
+For example (illustrative entries):
+
+```text
+2026-09-28T10:00:00+0000: New client connected from 192.168.1.21:53124 as station01-game (p4, c1, k60, u'station01').
+2026-09-28T10:00:01+0000: Received PUBLISH from station01-game (d0, q1, r0, m1, 'station/station01/login', ... (26 bytes))
+```
+
+Match `station01-game` in the `Received PUBLISH` line to its connection entry to
+find the sending IP (`192.168.1.21`). `Sending PUBLISH to ...` means the broker
+is forwarding a message to a subscriber. The IP appears on the connection entry;
+message entries identify the client and topic. Use the most recent connection
+entry for that client ID. The supplied clients use automatically generated IDs,
+which can be matched in the same way.
+
+The IP is the network peer seen by Mosquitto. A Docker gateway, NAT, or proxy can
+hide the device's original address. The controller receives MQTT topics and
+payloads, not the publishing device's socket address. Logs also remain available
+in `/mosquitto/log/mosquitto.log` inside the broker container. These options use
+[Mosquitto's connection and packet logging](https://mosquitto.org/man/mosquitto-conf-5.html).
 
 ### 2. Topic reference
 

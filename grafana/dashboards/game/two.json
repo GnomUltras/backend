@@ -1,0 +1,49 @@
+{
+  "uid": "space-intro-02",
+  "title": "Intro 02 Welcome",
+  "tags": [
+    "intro"
+  ],
+  "style": "dark",
+  "editable": true,
+  "graphTooltip": 0,
+  "refresh": "",
+  "schemaVersion": 39,
+  "version": 1,
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
+  },
+  "templating": {
+    "list": []
+  },
+  "annotations": {
+    "list": []
+  },
+  "panels": [
+    {
+      "id": 1,
+      "type": "text",
+      "title": "",
+      "transparent": true,
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 28
+      },
+      "options": {
+        "mode": "html",
+        "content": "<div style=\"background:#05060f;min-height:88vh;display:flex;flex-direction:column;justify-content:center;align-items:center;text-align:center;font-family:'Courier New',monospace;padding:2vw;box-sizing:border-box;\"><div style=\"font-size:4.5vw;font-weight:bold;color:#7fe9ff;letter-spacing:0.3vw;margin:1.2vw 0;\">TRAINEE, WELCOME ABOARD.</div><div style=\"font-size:2.6vw;color:#39ff88;line-height:1.5;margin:0.9vw 0;\">You have completed your training at the Space Academy.</div><div style=\"font-size:2.6vw;color:#39ff88;line-height:1.5;margin:0.9vw 0;\">But graduation is not the end.</div><div style=\"font-size:3.4vw;font-weight:bold;color:#ffd23f;letter-spacing:0.3vw;margin:1.2vw 0;\">It is the beginning.</div><div style=\"font-size:2.6vw;color:#39ff88;line-height:1.5;margin:0.9vw 0;\">Before you can be promoted to the next rank, you must prove that you are ready to operate as a real member of the crew.</div><div style=\"font-size:2.8vw;color:#7fe9ff;line-height:1.5;margin:0.9vw 0;\">Your final exam begins now.</div></div>",
+        "code": {
+          "language": "plaintext",
+          "showLineNumbers": false,
+          "showMiniMap": false
+        }
+      }
+    }
+  ]
+}

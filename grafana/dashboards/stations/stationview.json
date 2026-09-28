@@ -4,7 +4,126 @@
   "tags": ["stations"],
   "timezone": "browser",
   "schemaVersion": 39,
-  "version": 1,
+  "version": 2,
   "refresh": "5s",
-  "panels": []
+  "time": { "from": "now-12h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "table",
+      "title": "Stationen",
+      "gridPos": { "x": 0, "y": 0, "w": 8, "h": 9 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT s.name AS \"Station\", CASE WHEN ss.status IS NULL OR ss.status = 'idle' THEN 'frei' ELSE 'besetzt' END AS \"Status\", COALESCE(t.name, '-') AS \"Gruppe\" FROM station s LEFT JOIN station_state ss ON ss.station_id = s.station_id LEFT JOIN team t ON t.id = ss.team_id ORDER BY s.station_id"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Status" },
+            "properties": [
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "frei": { "text": "frei", "color": "green", "index": 0 },
+                      "besetzt": { "text": "besetzt", "color": "red", "index": 1 }
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "lg" }
+    },
+    {
+      "id": 2,
+      "type": "table",
+      "title": "Fortschritt der Gruppen",
+      "description": "Grün = abgeschlossen (Dauer), Gelb = läuft (bisherige Dauer), Rot = noch offen",
+      "gridPos": { "x": 8, "y": 0, "w": 16, "h": 9 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT s.name AS station, t.name AS team, CASE WHEN r.completed_at IS NOT NULL THEN '✔ ' || to_char(r.completed_at - r.started_at, 'HH24:MI:SS') WHEN r.started_at IS NOT NULL THEN '▶ ' || to_char(now() - r.started_at, 'HH24:MI:SS') ELSE '✗' END AS zelle FROM station s CROSS JOIN team t LEFT JOIN results r ON r.team_id = t.id AND r.station_id = s.station_id ORDER BY s.station_id, t.id"
+        }
+      ],
+      "transformations": [
+        {
+          "id": "groupingToMatrix",
+          "options": { "columnField": "team", "rowField": "station", "valueField": "zelle", "emptyValue": "null" }
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": { "type": "color-background", "mode": "basic" }
+          },
+          "mappings": [
+            {
+              "type": "regex",
+              "options": { "pattern": "^✔.*", "result": { "color": "green", "index": 0 } }
+            },
+            {
+              "type": "regex",
+              "options": { "pattern": "^▶.*", "result": { "color": "yellow", "index": 1 } }
+            },
+            {
+              "type": "regex",
+              "options": { "pattern": "^✗.*", "result": { "color": "red", "index": 2 } }
+            }
+          ]
+        },
+        "overrides": []
+      },
+      "options": { "showHeader": true, "cellHeight": "lg" }
+    },
+    {
+      "id": 3,
+      "type": "table",
+      "title": "Highscore",
+      "description": "Ranking nach Gesamtzeit über alle Stationen. Gruppen, die noch nicht fertig sind, stehen ohne Platz darunter.",
+      "gridPos": { "x": 0, "y": 9, "w": 24, "h": 9 },
+      "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "grafana-postgresql-datasource", "uid": "game-postgres" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH tot AS (SELECT COUNT(*) AS c FROM station), agg AS (SELECT t.id, t.name, COUNT(r.completed_at) AS done, COALESCE(SUM(r.completed_at - r.started_at), interval '0') AS total FROM team t LEFT JOIN results r ON r.team_id = t.id GROUP BY t.id, t.name) SELECT CASE WHEN done = (SELECT c FROM tot) THEN RANK() OVER (PARTITION BY (done = (SELECT c FROM tot)) ORDER BY total) END AS \"Platz\", name AS \"Gruppe\", done || ' / ' || (SELECT c FROM tot) AS \"Stationen\", EXTRACT(EPOCH FROM total) AS \"Gesamtzeit\" FROM agg ORDER BY (done = (SELECT c FROM tot)) DESC, CASE WHEN done = (SELECT c FROM tot) THEN total END, done DESC, name"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": { "custom": { "align": "center" } },
+        "overrides": [
+          {
+            "matcher": { "id": "byName", "options": "Gesamtzeit" },
+            "properties": [ { "id": "unit", "value": "s" } ]
+          }
+        ]
+      },
+      "options": { "showHeader": true, "cellHeight": "lg" }
+    }
+  ]
 }

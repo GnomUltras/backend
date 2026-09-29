@@ -42,6 +42,7 @@ services:
     ports:
       - "3000:3000"
     environment:
+      GF_PANELS_DISABLE_SANITIZE_HTML: true
       GF_SECURITY_ADMIN_USER: admin
       GF_SECURITY_ADMIN_PASSWORD: admin
       POSTGRES_USER: ${POSTGRES_USER:-stationuser}

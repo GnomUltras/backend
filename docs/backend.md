@@ -54,7 +54,7 @@ through `0004` already on main remain unchanged.
 station's live state.
 Chip IDs (`team.id`) and station IDs are `VARCHAR(50)` strings. Unique team
 names (`team.name`) and game-table `team_id` columns are `VARCHAR(255)` strings;
-for example, `AA BB CC 01` maps to `Team-01`. `station_state` uses
+for example, `74 FA CB 01` maps to `Team-01`. `station_state` uses
 `team_id` for the assigned team. Only the event row counter (`station_events.id`)
 identifies an event. The new `round` column is a positive integer scoped to a team,
 not a globally shared round counter.
@@ -64,7 +64,7 @@ for the new station states.
 
 | Table | Purpose |
 | --- | --- |
-| `team` | Unique, non-null primary key `id` for the scanned chip (e.g. `AA BB CC 01`) and unique, non-null `name` (e.g. `Team-01`). |
+| `team` | Unique, non-null primary key `id` for the scanned chip (e.g. `74 FA CB 01`) and unique, non-null `name` (e.g. `Team-01`). |
 | `station` | String primary key `station_id` such as `station_2`, game `name`, and positive integer `routing_order`. |
 | `station_state` | One current-state row per station: `status`, `team_id`, `round`, `review_score`, and `updated_at`. Idle stations have no team or round. |
 | `results` | One result per team/round/station: `started_at`, `completed_at`, review, and result status. Earlier rounds remain available. |
@@ -124,13 +124,17 @@ PostgreSQL is the source of truth for teams and their scanned identifiers.
 The resolved team name is used consistently in `team.name`,
 `results.team_id`, `station_state.team_id`, and `station_events.team_id`.
 The station string is used consistently in every `station_id` column.
-Startup initializes station names from their IDs but never creates or overwrites
-teams. The migration seeds `AA BB CC 01` through `AA BB CC 05` for `Team-01`
-through `Team-05`. Manage teams directly in PostgreSQL, for example:
+Controller startup creates missing station state rows, preserving station names
+and teams. Migration `0008_team_tag_uids` registers the
+[five physical tags](../README.md#7-try-it) on fresh databases and replaces existing
+IDs for `Team-01` through `Team-05`. Results, rounds, events, and active assignments
+are preserved because they reference team names. Other teams are left unchanged.
+Downgrading `0008` keeps the registered tags. Manage teams directly in PostgreSQL,
+for example:
 
 ```sql
 -- Replace a chip without changing its team's identity or saved results.
-UPDATE team SET id = 'AA BB CC 06' WHERE name = 'Team-01';
+UPDATE team SET id = 'replacement-tag-uid' WHERE name = 'Team-01';
 
 -- Register another team with any non-empty string identifier.
 INSERT INTO team (id, name)
@@ -139,7 +143,7 @@ VALUES ('another-chip-format', 'Team-06');
 
 Changes apply on the next login without a controller restart. Identifiers are
 case-sensitive strings, not parsed hex bytes or a PostgreSQL UUID type. Internal
-spaces are significant (`AA BB CC 01` differs from `AABBCC01`); surrounding request
+spaces are significant (`74 FA CB 01` differs from `74FACB01`); surrounding request
 whitespace is stripped, so store identifiers without leading/trailing whitespace.
 Both `id` and `name` must be unique and non-null. The JSON login field remains
 `uuid` for compatibility. Only `team.id` stores the scanned chip ID. The existing

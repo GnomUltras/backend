@@ -24,9 +24,9 @@ POLL_SECONDS = 0.5
 
 # Team ID, registered NFC UUID, and review score (0, 1, or 2).
 TEAMS = (
-    ("Team-01", "AA BB CC 01", 0),
-    ("Team-02", "AA BB CC 02", 1),
-    ("Team-03", "AA BB CC 03", 2),
+    ("Team-01", "74 FA CB 01", 0),
+    ("Team-02", "35 7F CB 01", 1),
+    ("Team-03", "2C A1 19 49", 2),
 )
 
 

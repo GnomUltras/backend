@@ -84,7 +84,7 @@ for every other suffix.
 | When | Topic | Exact example payload | Backend action / resulting state |
 | --- | --- | --- | --- |
 | Boot, reconnect, or check current state | `/status` | `{"request":"GET"}` | Read saved state; no game change |
-| Team scans its chip while station is `idle` | `/login` | `{"uuid":"AA BB CC 01"}` | Resolve team, check availability → `logged_in` |
+| Team scans its chip while station is `idle` | `/login` | `{"uuid":"74 FA CB 01"}` | Resolve team, check availability → `logged_in` |
 | Logged-in team starts playing | `/start` | `{"team_id":"Team-01"}` | Record start time → `running` |
 | Game finishes | `/complete` | `{"team_id":"Team-01"}` | Record completion time → `reviewing` |
 | Team submits its rating | `/review` | `{"team_id":"Team-01","score":2}` | Save rating → automatic next-station handoff → `idle` |
@@ -95,7 +95,7 @@ for every other suffix.
 | `team_id` | Resolved **team name** from the login reply, e.g. `Team-01`. Use it for start, complete, and review. |
 | `score` | Integer **0, 1, or 2**. No strings, floats, or booleans. |
 
-Chip IDs are strings: `AA BB CC 01` and `AABBCC01` are different IDs. Use the
+Chip IDs are strings: `74 FA CB 01` and `74FACB01` are different IDs. Use the
 registered spelling. The station ID comes from the topic, not the JSON.
 
 ### Backend → station
@@ -151,7 +151,7 @@ Wrong-order actions, another login, and actions from another team are rejected.
 sequenceDiagram
     participant S as Station station_2
     participant B as Backend via MQTT
-    S->>B: /login {"uuid":"AA BB CC 01"}
+    S->>B: /login {"uuid":"74 FA CB 01"}
     Note right of B: Resolve chip to Team-01, validate, save
     B-->>S: /status {"status":"logged_in","team_id":"Team-01"}
     B-->>S: /error {"return":"OK","action":"login","team_id":"Team-01"}
@@ -362,7 +362,17 @@ python -m pip install "paho-mqtt>=2.0"
 | `python gameClient/clientTest.py` | Send 1, wait for 2 |
 | `python gameClient/clientAutoPlay.py` | Run three teams through five stations, then an extra round with Team-01 |
 
-Example chip IDs `AA BB CC 01` … `AA BB CC 05` map to `Team-01` … `Team-05`.
+Migration `0008_team_tag_uids` registers these physical tags on fresh databases
+and updates the existing teams when upgrading:
+
+| Team | Tag UID (`team.id`) |
+| --- | --- |
+| Team-01 | `74 FA CB 01` |
+| Team-02 | `35 7F CB 01` |
+| Team-03 | `2C A1 19 49` |
+| Team-04 | `63 12 46 16` |
+| Team-05 | `F3 05 59 16` |
+
 The action client waits for all required replies. Its default **5-second reply
 wait** is a client timeout; it never resets the backend's game state.
 Auto-play writes real results/events and stops on an error; use it when the

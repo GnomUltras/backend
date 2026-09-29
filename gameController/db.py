@@ -108,6 +108,18 @@ def lock_team(cur, team_id):
     return cur.fetchone() is not None
 
 
+def get_team_station(cur, team_id):
+    """Find an existing assignment after locking the team, including pending handoffs."""
+    # Read without locking other station rows: their transactions may be waiting
+    # for our team lock. The team lock already serializes assignment changes.
+    cur.execute(
+        "SELECT station_id FROM station_state WHERE team_id = %s ORDER BY station_id LIMIT 1",
+        (team_id,),
+    )
+    row = cur.fetchone()
+    return row["station_id"] if row else None
+
+
 def get_latest_round(cur, team_id):
     """Read the latest saved round, starting at 1 for a team with no results."""
     cur.execute('SELECT COALESCE(MAX("round"), 1) AS "round" FROM results WHERE team_id = %s', (team_id,))

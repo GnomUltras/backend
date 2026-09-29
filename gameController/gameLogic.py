@@ -28,6 +28,7 @@ ERROR_MESSAGES = {
     "INVALID_REVIEW_SCORE": "Review score must be 0, 1, or 2.",
     "UNKNOWN_TEAM": "The UUID is unmapped or the requested team is not configured in the database.",
     "STATION_BUSY": "The station is occupied. Wait until it is idle before logging in.",
+    "TEAM_BUSY": "This team is already assigned to another station. Finish its review and handoff before logging in again.",
     "INVALID_STATE": "This action is not allowed in the current state. Follow login, start, complete, review.",
     "TEAM_MISMATCH": "Only the team currently assigned to this station may advance its game.",
     "STATION_ALREADY_COMPLETED": "This team has already completed this station in this round.",
@@ -86,6 +87,13 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
         if not db.lock_team(cur, team_id):
             raise RequestRejectedError("UNKNOWN_TEAM")
         if action == "login":
+            # The team lock serializes logins even when they target different stations.
+            occupied_station = db.get_team_station(cur, team_id)
+            if occupied_station is not None:
+                raise RequestRejectedError(
+                    "TEAM_BUSY",
+                    f"{team_id} is still assigned to {occupied_station}. Finish its review and handoff before logging in again.",
+                )
             round_number = db.get_latest_round(cur, team_id)
             reviewed_stations = db.get_reviewed_stations(cur, team_id, round_number)
             # Reusing a chip starts a new round only after every station's review.

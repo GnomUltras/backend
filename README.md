@@ -101,6 +101,9 @@ stateDiagram-v2
 ```
 
 The station stays occupied from accepted login through the completed handoff.
+Each team can occupy only one station at a time. Logging in elsewhere returns
+`TEAM_BUSY` until the previous station has finished its review handoff and returned
+to `idle`. The rejected login changes no state, result, or event; retry after release.
 Wrong-order actions, another login, and actions from another team are rejected.
 **There are no automatic game/stage timeouts.**
 
@@ -160,11 +163,11 @@ backend sends a **JSON object**, with QoS 1 and `retain=false`:
 
 ```mermaid
 flowchart LR
-    R[Valid review received] --> S[Save score; remain reviewing]
+    R["Valid review received"] --> S["Save score and remain reviewing"]
     S --> D[Check saved round progress and live station occupancy]
     D --> N[Publish nextStation routing result]
     N --> A[Broker acknowledges delivery]
-    A --> I[Save idle; clear assigned team]
+    A --> I["Save idle and clear assigned team"]
     I --> O[Publish idle status and review OK]
 ```
 
@@ -226,13 +229,13 @@ On boot or reconnect, subscribe first and query the saved state. **Do not assume
 
 ```mermaid
 flowchart TD
-    C[Connect and subscribe; wait for SUBACK] --> Q[Send GET on /status]
+    C["Connect and subscribe, then wait for SUBACK"] --> Q["Send GET on /status"]
     Q --> W[Wait for status and status-query OK]
     W --> D{Returned state}
     D -->|idle| I[Ready for a chip scan]
-    D -->|logged_in| L[Restore team; offer Start]
-    D -->|running| R[Restore team; resume station UI]
-    D -->|reviewing| V[Restore team; review or handoff pending]
+    D -->|logged_in| L["Restore team and offer Start"]
+    D -->|running| R["Restore team and resume station UI"]
+    D -->|reviewing| V["Restore team, review or handoff pending"]
 ```
 
 A `reviewing` status does not reveal whether a score is already saved. If a
@@ -246,7 +249,7 @@ sequenceDiagram
     participant B as Backend
     S->>B: /review {"team_id":"Team-01","score":9}
     B-->>S: /error ERROR + INVALID_REVIEW_SCORE
-    Note over S,B: State remains reviewing; no success status or destination
+    Note over S,B: State remains reviewing, no success status or destination
     S->>B: /review {"team_id":"Team-01","score":2}
     B-->>S: /nextStation destination
     B-->>S: /status idle + null
@@ -273,6 +276,7 @@ sequenceDiagram
 | `INVALID_REVIEW_SCORE` | Score must be an integer 0, 1, or 2 |
 | `UNKNOWN_TEAM` | Unknown chip ID or team |
 | `STATION_BUSY` | Login at an occupied station |
+| `TEAM_BUSY` | Team is still assigned to another station, including a pending review handoff |
 | `INVALID_STATE` | Wrong action order, duplicate action, or review already saved |
 | `TEAM_MISMATCH` | Requesting team does not own this station |
 | `STATION_ALREADY_COMPLETED` | Team already completed this station in this round |

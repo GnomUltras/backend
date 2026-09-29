@@ -154,7 +154,13 @@ controller selects a destination from current occupancy and that visit's saved r
 State transitions and acknowledgement handling remain controller responsibilities.
 The controller locks the station and team rows, checks the action against the current
 state, and writes state, result, and event in one transaction. The team lock also
-serializes round decisions when requests arrive at different stations. It refreshes
+serializes round decisions and login occupancy checks across stations. After acquiring
+the team lock, login reads `station_state` for an existing assignment and returns
+`TEAM_BUSY` without writing anything if one exists. This includes `logged_in`,
+`running`, and `reviewing`, even after a score is saved while the handoff is pending.
+Only the committed reset to `idle` frees the team for another login. The occupancy
+query does not lock other station rows, avoiding a lock cycle with requests waiting
+for the same team. It refreshes
 `updated_at` on each state change and sends a success reply only after commit.
 Failed writes roll back together; duplicate or out-of-order actions add no event.
 

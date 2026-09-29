@@ -1,0 +1,648 @@
+{
+  "annotations": {
+    "list": [
+      {
+        "builtIn": 1,
+        "datasource": {
+          "type": "grafana",
+          "uid": "-- Grafana --"
+        },
+        "enable": true,
+        "hide": true,
+        "iconColor": "rgba(0, 211, 255, 1)",
+        "name": "Annotations & Alerts",
+        "type": "dashboard"
+      }
+    ]
+  },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "id": 7,
+  "links": [],
+  "panels": [
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "left",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Status"
+            },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "options": {
+                      "free": {
+                        "color": "#3fd18a",
+                        "index": 0,
+                        "text": "● free"
+                      },
+                      "occupied": {
+                        "color": "#ff5d5d",
+                        "index": 1,
+                        "text": "● occupied"
+                      },
+                      "pending": {
+                        "color": "#ffc44d",
+                        "index": 2,
+                        "text": "● pending"
+                      }
+                    },
+                    "type": "value"
+                  }
+                ]
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 0
+      },
+      "id": 1,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": false
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH st AS (SELECT unnest(string_to_array('${station:csv}', ',')) AS station_id),\ncur AS (SELECT st.station_id, COALESCE((SELECT e.event_type FROM station_events e WHERE e.station_id = st.station_id ORDER BY e.created_at DESC, e.id DESC LIMIT 1),'free') AS status FROM st)\nSELECT station_id AS \"Station\", status AS \"Status\" FROM cur ORDER BY station_id",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Stations",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#3fd18a",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#3fd18a",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 0
+      },
+      "id": 2,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "valueSize": 48
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH st AS (SELECT unnest(string_to_array('${station:csv}', ',')) AS station_id),\ncur AS (SELECT st.station_id, COALESCE((SELECT e.event_type FROM station_events e WHERE e.station_id = st.station_id ORDER BY e.created_at DESC, e.id DESC LIMIT 1),'free') AS status FROM st)\nSELECT COUNT(*) FILTER (WHERE status='free') || ' / ' || COUNT(*) AS \"Systems online\" FROM cur",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Systems online",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#ff5d5d",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ff5d5d",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 0
+      },
+      "id": 3,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "valueSize": 48
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH st AS (SELECT unnest(string_to_array('${station:csv}', ',')) AS station_id),\ncur AS (SELECT st.station_id, COALESCE((SELECT e.event_type FROM station_events e WHERE e.station_id = st.station_id ORDER BY e.created_at DESC, e.id DESC LIMIT 1),'free') AS status FROM st)\nSELECT COUNT(*) FILTER (WHERE status='occupied') AS \"In progress\" FROM cur",
+          "refId": "A"
+        }
+      ],
+      "title": "Repairs in progress",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#ffc44d",
+            "mode": "fixed"
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#ffc44d",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 0
+      },
+      "id": 4,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "center",
+        "orientation": "auto",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "valueSize": 48
+        },
+        "textMode": "value",
+        "wideLayout": true
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH st AS (SELECT unnest(string_to_array('${station:csv}', ',')) AS station_id),\ncur AS (SELECT st.station_id, COALESCE((SELECT e.event_type FROM station_events e WHERE e.station_id = st.station_id ORDER BY e.created_at DESC, e.id DESC LIMIT 1),'free') AS status FROM st)\nSELECT COUNT(*) FILTER (WHERE status='pending') AS \"Pending\" FROM cur",
+          "refId": "A"
+        }
+      ],
+      "title": "Awaiting inspection",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "fixedColor": "#d7e3f4",
+            "mode": "fixed"
+          },
+          "mappings": [
+            {
+              "options": {
+                "free": {
+                  "color": "#3fd18a",
+                  "index": 0,
+                  "text": "free"
+                },
+                "occupied": {
+                  "color": "#ff5d5d",
+                  "index": 1,
+                  "text": "occupied"
+                },
+                "pending": {
+                  "color": "#ffc44d",
+                  "index": 2,
+                  "text": "pending"
+                }
+              },
+              "type": "value"
+            }
+          ],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "#d7e3f4",
+                "value": 0
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 8
+      },
+      "id": 5,
+      "maxPerRow": 6,
+      "options": {
+        "colorMode": "value",
+        "graphMode": "none",
+        "justifyMode": "auto",
+        "orientation": "horizontal",
+        "percentChangeColorMode": "standard",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "showPercentChange": false,
+        "text": {
+          "titleSize": 14,
+          "valueSize": 22
+        },
+        "textMode": "value_and_name",
+        "wideLayout": false
+      },
+      "pluginVersion": "12.2.0",
+      "repeat": "station",
+      "repeatDirection": "h",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1),\nrev AS (\n  SELECT review_score FROM station_events WHERE station_id = '${station:raw}' AND review_score IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') AS \"Status\",\n  CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last) END AS \"Team\",\n  COALESCE((SELECT CASE WHEN review_score >= 4 THEN '😄' WHEN review_score = 3 THEN '😐' ELSE '🙁' END FROM rev), '–') AS \"Review\"",
+          "refId": "A"
+        }
+      ],
+      "title": "${station:text}",
+      "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 16
+      },
+      "id": 6,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH ev AS (\n  SELECT station_id, team_id, event_type, created_at,\n         LEAD(created_at) OVER (PARTITION BY station_id ORDER BY created_at, id) AS ended_at\n  FROM station_events),\nrep AS (\n  SELECT station_id, team_id, EXTRACT(EPOCH FROM (ended_at - created_at)) AS secs\n  FROM ev WHERE event_type = 'occupied' AND ended_at IS NOT NULL)\nSELECT \"Station\",\"Team\",\"Time\" FROM (SELECT DISTINCT ON (station_id) station_id AS \"Station\", team_id AS \"Team\", lpad(floor(secs/60)::int::text,2,'0') || ':' || lpad((floor(secs)::int % 60)::text,2,'0') AS \"Time\" FROM rep ORDER BY station_id, secs) t ORDER BY \"Station\"",
+          "refId": "A"
+        }
+      ],
+      "title": "Leader Board /Stations/ – fastest repair per station",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "custom": {
+            "align": "center",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "footer": {
+              "reducers": []
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "#"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              },
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ffc44d",
+                  "mode": "fixed"
+                }
+              },
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 12,
+        "y": 16
+      },
+      "id": 7,
+      "options": {
+        "cellHeight": "sm",
+        "showHeader": true
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH ev AS (\n  SELECT station_id, team_id, event_type, created_at,\n         LEAD(created_at) OVER (PARTITION BY station_id ORDER BY created_at, id) AS ended_at\n  FROM station_events),\nrep AS (\n  SELECT station_id, team_id, EXTRACT(EPOCH FROM (ended_at - created_at)) AS secs\n  FROM ev WHERE event_type = 'occupied' AND ended_at IS NOT NULL)\nSELECT ROW_NUMBER() OVER (ORDER BY SUM(secs)) AS \"#\", team_id AS \"Team\", lpad(floor(SUM(secs)/60)::int::text,2,'0') || ':' || lpad((floor(SUM(secs))::int % 60)::text,2,'0') AS \"Total time\" FROM rep GROUP BY team_id ORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "Leader Board /Teams/ – total repair time",
+      "type": "table"
+    }
+  ],
+  "preload": false,
+  "refresh": "5s",
+  "schemaVersion": 42,
+  "tags": [
+    "spaceship",
+    "stations"
+  ],
+  "templating": {
+    "list": [
+      {
+        "current": {
+          "text": [
+            "All"
+          ],
+          "value": [
+            "$__all"
+          ]
+        },
+        "hide": 2,
+        "includeAll": true,
+        "label": "Station",
+        "multi": true,
+        "name": "station",
+        "options": [],
+        "query": "Station 1 : station_1, Station 2 : station_2, Station 3 : station_3, Station 4 : station_4, Station 5 : station_5, Station 6 : station_6",
+        "type": "custom"
+      }
+    ]
+  },
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "timepicker": {
+    "hidden": true
+  },
+  "timezone": "browser",
+  "title": "Spaceship Repair Control",
+  "uid": "spaceship-repair",
+  "version": 4
+}

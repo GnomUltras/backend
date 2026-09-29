@@ -140,6 +140,24 @@ login starts a new round.
 names the destination or reports that the round is complete. It does not log
 the team into the destination or reserve it.
 
+### Routing payload
+
+Subscribe to your own `/nextStation` topic before submitting the review. The
+backend sends a **JSON object**, with QoS 1 and `retain=false`:
+
+```json
+{"next_station":"station04","team_id":"Team-01","round":1,"routing_status":"available"}
+```
+
+| Field | Type | How to use it |
+| --- | --- | --- |
+| `next_station` | String or `null` | Destination station ID. Check for `null` before displaying directions. |
+| `team_id` | String | Finishing team's name, as returned by login. Match it to the team being reviewed. |
+| `round` | Integer | The finishing visit's round, not the next round. |
+| `routing_status` | String | Use the outcome table below to choose directions, a waiting notice, or a completion message. |
+
+### Selection and handoff
+
 ```mermaid
 flowchart LR
     R[Valid review received] --> S[Save score; remain reviewing]
@@ -171,6 +189,35 @@ flowchart LR
 with idle status and review OK after broker acknowledgement. A null destination
 is a valid response, not a reason to resend the review. Routing can be recomputed
 on controller reconnect while a handoff is pending, so a retried suggestion may change.
+
+### Routing examples
+
+All examples use five stations and the finishing team's **current round**.
+The controller checks every eligible free station before falling back to a busy
+one; it does not simply send the team to the next station number.
+
+| Situation after review | Routing reply |
+| --- | --- |
+| Leaving station01; station02 is busy, station03 was already completed, station04 and station05 are free and unfinished | `available`, `next_station: "station04"` |
+| Leaving station04; station05 was completed, station01 is busy, station02 is free and unfinished | `available`, `next_station: "station02"` (wrap around) |
+| Leaving station01; only station02 and station04 are unfinished, and both are busy | `queued`, `next_station: "station02"` |
+| Every configured station has a completed game and a saved review | `round_complete`, `next_station: null` |
+| All games were completed, but a review at another station is still missing | `no_available_station`, `next_station: null` (completed stations cannot be played again) |
+
+For example, a finished round produces:
+
+```json
+{"next_station":null,"team_id":"Team-01","round":1,"routing_status":"round_complete"}
+```
+
+Show a completion message and finish collecting the idle status and review OK.
+Do not automatically log the team into station01: a later chip scan starts its
+next round. For `no_available_station`, finish the same handoff and ask the backend
+group to check missing reviews or station records. A status GET does not request
+another routing decision.
+
+For the database predicates and recovery details, see
+[Choosing the next station in the backend guide](docs/backend.md#choosing-the-next-station).
 
 ## 5. Reconnect and errors
 

@@ -3,7 +3,7 @@
 [Back to the station MQTT guide](../README.md)
 
 For station integration, use the README. This page covers deployment, stored
-state, team registration, and Grafana queries.
+state, team registration, next-station routing, and Grafana queries.
 
 ## System overview
 
@@ -248,9 +248,30 @@ idle state; a failed handoff release stays in `reviewing` until a reconnect retr
 
 ### Choosing the next station
 
-`gameLogic.choose_next_station` makes the routing decision; `db.get_routing_snapshot`
-reads occupancy and results in a read-only, consistent PostgreSQL snapshot.
-No migration or in-memory game-state cache is needed.
+[`gameLogic.choose_next_station`](../gameController/gameLogic.py) makes the routing
+decision after the review transaction commits.
+[`db.get_routing_snapshot`](../gameController/db.py) reads occupancy and results in
+a read-only `REPEATABLE READ` transaction. It first checks the team name, then
+joins `station` to `station_state` and to this team's `results` for the saved round.
+No migration or in-memory game-state cache is needed for routing.
+
+The configured station list is `station01` through `STATION_COUNT`, rather than
+every row in the database. The source station is excluded from destinations.
+For example, leaving station03 with five stations gives the search order
+`station04 → station05 → station01 → station02`.
+
+| Classification | Exact rule |
+| --- | --- |
+| Completed for this team and round | Result has `completed_at`, or `results.status` is `complete` or `review`. Never suggest replaying it. |
+| Reviewed for round completion | Result has `completed_at` **and** `results.status = 'review'`. All configured stations must meet this rule. |
+| Available candidate | Unfinished, `station_state.status = 'idle'`, and `team_id IS NULL`. |
+| Busy candidate | Unfinished, status is `logged_in`, `running`, or `reviewing`, and `team_id IS NOT NULL`. |
+| Missing or inconsistent station state | Neither an available nor a busy candidate. Missing catalog rows also cannot be destinations. |
+
+First search the entire circular order for an available candidate. Only if none
+exists, search the same order for a busy candidate. Free stations take priority
+over closer busy stations. If no candidate exists, return `no_available_station`.
+If every configured station is reviewed, `round_complete` takes precedence.
 
 ```mermaid
 flowchart TD
@@ -275,6 +296,23 @@ excluded, matching the login replay checks. Round completion requires every
 configured station to have a completed, reviewed result. Earlier rounds do not
 block destinations in a later round.
 
+#### Routing results on MQTT
+
+All outcomes are JSON on the **source** station's
+`station/<station_id>/nextStation` topic, with QoS 1 and `retain=false`:
+
+| Outcome | `next_station` | Backend meaning |
+| --- | --- | --- |
+| `available` | Selected station ID | First free, unfinished candidate. |
+| `queued` | Selected station ID | No free candidate; first occupied, unfinished candidate. No queue position is stored. |
+| `round_complete` | `null` | All configured stations have completed, reviewed results for this round. |
+| `no_available_station` | `null` | Round is unfinished, but no valid destination exists. Inspect missing state/catalog rows or completed games awaiting reviews. |
+
+Each object also contains `team_id` (the team name), `round` (the source visit's
+round), and `routing_status` (one of the outcomes above). A null destination is
+an ordinary routing outcome, not `HANDOFF_ERROR`.
+See the [station guide's payload and examples](../README.md#routing-payload).
+
 A busy fallback is explicitly marked `queued`; the team waits at that station.
 Routing creates no reservation or destination login. Two teams may receive the
 same suggestion, and availability can change before arrival; the login transaction
@@ -286,6 +324,29 @@ message, so teams do not block each other by occupying finished stations. A
 routing database error instead returns `HANDOFF_ERROR` and preserves the saved
 review for recovery. Reconnect recovery recalculates the suggestion from current
 data using the original visit's round; it does not start the next round.
+
+#### Delivery, release, and retries
+
+`send_next_station` tracks the committed source-state snapshot in
+`pending_next_stations`, keyed by the MQTT publish message ID. When the broker
+acknowledges that message, `on_publish` releases the source in a new transaction:
+it sets `idle`, clears the team, round, and review score, and appends an `idle`
+event using the finishing team's original round. Only then does it send
+`/status` with idle/null team and `/error` with `return: "OK", action: "review"`.
+This also happens for `queued` and both null-destination outcomes.
+
+The release checks the saved team, `updated_at`, and reviewing state with a saved
+score. An acknowledgement for an older visit cannot release a newer one. Broker
+acknowledgement confirms MQTT receipt, not that a station displayed the directions.
+
+An unknown routing team, failed routing query, failed publish, rejected broker
+acknowledgement, or failed idle transaction reports `HANDOFF_ERROR` when possible.
+The already committed review is retained for recovery. There is no periodic
+rerouting timer: controller reconnect reloads `reviewing` rows with a non-null
+score and computes a new suggestion from current occupancy. A score of zero is
+saved, too. Duplicate replies and a changed destination are therefore possible.
+Once the source is idle, its destination is not stored for replay; station
+reconnects and status queries do not resend it.
 
 ### Recovering an interrupted review
 

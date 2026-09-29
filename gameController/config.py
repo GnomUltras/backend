@@ -28,12 +28,4 @@ DB_CONFIG = {
 # Creates station IDs from station01 up to this count, also used for nextStation routing.
 STATION_COUNT = int(os.getenv("STATION_COUNT", "5"))
 
-# Example NFC UUIDs for local testing. Replace these with the actual chip IDs.
-# Stations send the UUID; the controller looks up the matching team here.
-NFC_TEAMS = {
-    "AA BB CC 01": "Team-01",
-    "AA BB CC 02": "Team-02",
-    "AA BB CC 03": "Team-03",
-    "AA BB CC 04": "Team-04",
-    "AA BB CC 05": "Team-05",
-}
+# Team IDs and scanned identifiers are managed in PostgreSQL's team table.

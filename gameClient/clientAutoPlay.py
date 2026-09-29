@@ -45,7 +45,7 @@ def wait_for_idle(station_id):
         status = clientStatus.request_status(station_id)
         if status is None:
             raise RuntimeError(f"No status reply from {station_id}.")
-        if status["status"] == "error":
+        if status.get("return") == "ERROR":
             raise RuntimeError(f"{station_id}: {status.get('message', 'Status query rejected.')}")
         if status["status"] == "idle" and status["team_id"] is None:
             return
@@ -57,14 +57,14 @@ def wait_for_idle(station_id):
 
 def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
     """Stop on a rejected or missing reply rather than sending the next action."""
-    response = clientLogin.send_request(station_id, nfc_uuid, action, review_score)
+    response = clientLogin.send_request(station_id, nfc_uuid if action == "login" else team_id, action, review_score)
     if response is None:
         raise RuntimeError(f"{team_id} at {station_id}: no complete reply for {action}.")
-    if response.get("status") == "error":
+    if response.get("return") == "ERROR":
         code = response.get("error_code", "ERROR")
         message = response.get("message", "Request rejected.")
         raise RuntimeError(f"{team_id} at {station_id}: {code}: {message}")
-    if response.get("status") != action or response.get("team_id") != team_id:
+    if response.get("status") != clientLogin.ACTION_STATE[action] or response.get("team_id") != (None if action == "review" else team_id):
         raise RuntimeError(f"Unexpected reply for {team_id} at {station_id}: {response}")
     return response
 
@@ -87,15 +87,21 @@ def play_team(team_id, nfc_uuid, review_score):
         send_action(station_id, team_id, nfc_uuid, "complete")
         review = send_action(station_id, team_id, nfc_uuid, "review", review_score)
         destination = review.get("next_station")
-        if destination not in stations:
-            raise RuntimeError(f"Missing or invalid nextStation from {station_id}: {destination!r}")
 
         # Receiving nextStation can precede the controller's database update to idle.
         wait_for_idle(station_id)
         visited.add(station_id)
+        if review.get("routing_status") == "round_complete":
+            if len(visited) != len(stations) or destination is not None:
+                raise RuntimeError("Round finished unexpectedly; this simulation expects a fresh round.")
+            break
+        if destination not in stations or destination in visited:
+            raise RuntimeError(f"Missing or invalid nextStation from {station_id}: {destination!r}")
+        if review.get("routing_status") == "queued":
+            print(f"[QUEUE] {team_id}: waiting for {destination} to become idle.", flush=True)
         station_id = destination
 
-    # The final destination points into the next round; do not log in there yet.
+    # Round completion has no destination; a later login can start a new round.
     print(f"[TEAM DONE] {team_id}: completed all {STATION_COUNT} stations.", flush=True)
 
 

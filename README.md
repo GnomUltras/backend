@@ -1,949 +1,328 @@
-# Backend service
-Backend for the school project
+# Station MQTT guide
 
-MQTT-Broker/Backend Server: **192.168.1.11:1883** <br>
-Station 1 - xxxxxxxxxxxxxx: **192.168.1.21**<br>
-Station 2 - xxxxxxxxxxxxxx: **192.168.1.22**<br>
-Station 3 - xxxxxxxxxxxxxx: **192.168.1.23**<br>
-Station 4 - xxxxxxxxxxxxxx: **192.168.1.24**<br>
-Station 5 - xxxxxxxxxxxxxx: **192.168.1.25**<br>
+**Send an action → wait for its status and OK → continue.** The backend owns the
+station state. All examples use `station01`; replace it with your assigned ID.
 
-Dashboard: Grafana<br>
-Database: PostgreSQL (Time series database for grafana)<br>
-Backend Service: Python (handles events & database handling)<br>
-MQTT-broker: mosquitto
+[Connect](#1-connect) · [Send / receive](#2-what-to-send-and-receive) ·
+[Full visit](#3-one-complete-visit) · [Next station](#4-automatic-next-station) ·
+[Reconnect / errors](#5-reconnect-and-errors) · [Helpers](#6-time-and-connection-check) ·
+[Test clients](#7-try-it) · [Backend / database / Grafana](docs/backend.md)
 
-## Guide contents
-
-- [Backend service](#backend-service)
-  - [Guide contents](#guide-contents)
-  - [MQTT integration guide for station groups](#mqtt-integration-guide-for-station-groups)
-    - [1. Connect to the broker](#1-connect-to-the-broker)
-      - [Identify devices in broker logs](#identify-devices-in-broker-logs)
-    - [2. Topic reference](#2-topic-reference)
-    - [3. Game actions and their required order](#3-game-actions-and-their-required-order)
-    - [4. Status replies and read-only queries](#4-status-replies-and-read-only-queries)
-    - [5. Example: one complete station visit](#5-example-one-complete-station-visit)
-    - [6. Errors, timeouts, and reconnects](#6-errors-timeouts-and-reconnects)
-      - [Example: correct a rejected review](#example-correct-a-rejected-review)
-    - [7. Server time (Berlin time, included in the controller container)](#7-server-time-berlin-time-included-in-the-controller-container)
-    - [8. Try the protocol with the supplied clients](#8-try-the-protocol-with-the-supplied-clients)
-    - [9. Communication test](#9-communication-test)
-- [Database schema](#database-schema)
-    - [Current state, results, and events](#current-state-results-and-events)
-- [grafana](#grafana)
-  - [datasource setup](#datasource-setup)
-- [Flowchart for one station](#flowchart-for-one-station)
-
-
-```mermaid
-flowchart TD
-    %% Styling Definitionen
-    classDef station fill:#1168bd,stroke:#0b4884,stroke-width:2px,color:#fff,rx:5px,ry:5px;
-    classDef broker fill:#8c1b48,stroke:#5c102f,stroke-width:2px,color:#fff,rx:5px,ry:5px;
-    classDef backend fill:#f6d04d,stroke:#3776ab,stroke-width:2px,color:#000,rx:5px,ry:5px;
-    classDef database fill:#336791,stroke:#20405b,stroke-width:2px,color:#fff,rx:5px,ry:5px;
-    classDef dashboard fill:#f47f20,stroke:#d16512,stroke-width:2px,color:#fff,rx:5px,ry:5px;
-    classDef user fill:#2e3440,stroke:#d8dee9,stroke-width:2px,color:#fff,rx:20px,ry:20px;
-
-    %% Externe Clients / Stationen
-    subgraph Edge [Stationen - Raspberry PIs]
-        direction LR
-        S1["Station 1: <br/>192.168.1.21"]:::station
-        S2["Station 2: <br/>192.168.1.22"]:::station
-        S3["Station 3: <br/>192.168.1.23"]:::station
-        S4["Station 4: <br/>192.168.1.24"]:::station
-        S5["Station 5: <br/>192.168.1.25"]:::station
-    end
-
-    %% Zentraler Server
-    subgraph Server [Backend Server Pi - 192.168.1.11]
-        direction TB
-        MQTT{"Mosquitto Broker<br/>Port: 1883"}:::broker
-        PY(("Python Backend<br/>Event & DB Handler")):::backend
-        DB[("PostgreSQL<br/>(Time-Series DB)")]:::database
-        GF["Grafana<br/>Dashboard"]:::dashboard
-    end
-
-    Client(("Benutzer / Admin<br/>(Browser)")):::user
-
-    %% Verbindungen (Exakte ursprüngliche Struktur)
-    S1 & S2 & S3 & S4 & S5 <-- "Publish actions and queries<br/>Receive status, errors, nextStation and time" --> MQTT
-    MQTT <-- "Action handling, replies<br/>and Berlin time service" --> PY
-    PY -- "SQL (INSERT / UPDATE)" --> DB
-    GF -- "SQL (SELECT)" --> DB
-    Client -- "HTTP (Port 3000)" --> GF
-```
-
-# Topics
-
-## MQTT integration guide for station groups
-
-This section describes the station protocol, including the `nextStation`
-handoff after review, the [broker permissions](mosquitto/config/mosquitto.acl), and
-the separate [server-time script](gameController/servertime.py) and
-[communication test service](gameController/communication_test.py). All examples use station 1.
-Replace `station01` with your group's assigned station ID everywhere, including the MQTT username.
-
-The next-station handoff and automatic reset to `idle` are implemented in
-[gameController/gameLogic.py](gameController/gameLogic.py). The ACL permits the
-backend to publish destinations, and the action test client waits for both the
-review confirmation and the next-station message.
-
-### 1. Connect to the broker
+## 1. Connect
 
 | Setting | Value |
 | --- | --- |
-| Broker on the server Pi | `192.168.1.11` |
-| Broker on your own computer, including local Docker | `localhost` |
-| Port / transport | `1883`, MQTT over TCP, without TLS |
-| MQTT version used by the example clients | MQTT 3.1.1 |
-| Username | Your station ID: `station01`, `station02`, ..., `station05` |
-| Password in the supplied broker image | `testen123` |
-| Client ID | A unique ID for each connected client, e.g. `station01-game` |
-| Publish / subscribe QoS | Use `1` |
-| Retain flag | Always publish requests with `retain=false` |
+| Broker | `192.168.1.11:1883` on the project LAN; `localhost:1883` for local Docker |
+| Protocol | MQTT 3.1.1 over TCP, without TLS |
+| Username | Your station ID: `station01` … `station05` |
+| Password | `testen123` in the supplied broker image |
+| Client ID | Unique per connection, e.g. `station01-game` |
+| QoS / retain | QoS **1**, **`retain=false`** for requests and replies |
+| Format | UTF-8 JSON; topic names and JSON fields are case-sensitive |
 
-`localhost` means the machine running your client. A station Pi connecting to the
-server Pi must use `192.168.1.11`, even if the station software itself runs locally.
-The Docker service name `mosquitto` works inside the backend's Compose network.
-The Compose stack exposes port 1883; its configured WebSocket listener on 9001 is
-not published to other machines by the current Compose file.
-
-The username determines topic permissions. For example, `station02` can publish
-actions for `station/station02/...` and read its own replies. Use the exact spelling:
-`station01`, not `station1`, `1`, or `station-01`. Stations do not need the `backend`
-account or a subscription to `station/#`.
-
-#### Identify devices in broker logs
-
-The broker logs connection IPs, MQTT client IDs, usernames, and message topics.
-Rebuild it to apply the logging configuration, then follow its output:
-
-```sh
-docker compose up -d --build mosquitto
-docker compose logs -f mosquitto
-```
-
-For example (illustrative entries):
+Subscribe to these **three topics**, wait for subscription confirmation (SUBACK),
+then send requests:
 
 ```text
-2026-09-28T10:00:00+0000: New client connected from 192.168.1.21:53124 as station01-game (p4, c1, k60, u'station01').
-2026-09-28T10:00:01+0000: Received PUBLISH from station01-game (d0, q1, r0, m1, 'station/station01/login', ... (26 bytes))
+station/station01/status
+station/station01/error
+station/station01/nextStation
 ```
 
-Match `station01-game` in the `Received PUBLISH` line to its connection entry to
-find the sending IP (`192.168.1.21`). `Sending PUBLISH to ...` means the broker
-is forwarding a message to a subscriber. The IP appears on the connection entry;
-message entries identify the client and topic. Use the most recent connection
-entry for that client ID. The supplied clients use automatically generated IDs,
-which can be matched in the same way.
+Your username grants access only to your station's topics. Use `station01`
+exactly, not `station1` or `station-01`. A station Pi uses the server's LAN address;
+`localhost` would connect to the station Pi itself.
 
-The IP is the network peer seen by Mosquitto. A Docker gateway, NAT, or proxy can
-hide the device's original address. The controller receives MQTT topics and
-payloads, not the publishing device's socket address. Logs also remain available
-in `/mosquitto/log/mosquitto.log` inside the broker container. These options use
-[Mosquitto's connection and packet logging](https://mosquitto.org/man/mosquitto-conf-5.html).
+## 2. What to send and receive
 
-### 2. Topic reference
+**Topic format:** `station/<station_id>/<topic>`.
+Below, `/login` means the full topic **`station/station01/login`**, and likewise
+for every other suffix.
 
-`<station_id>` below is a placeholder, for example `station01`. Topic names are case-sensitive.
-Game actions, status queries, and time queries are UTF-8 JSON objects. The `/test`
-topic uses plain `1` and `2` instead. Use the exact field names
-below for JSON requests. The MQTT topic selects the action and station; send the NFC UUID in
-`nfc_uuid`, not a team name or a nested object.
+### Station → backend
 
-| Topic | What the station does | Request payload example | Where the reply arrives |
+| When | Topic | Exact example payload | Backend action / resulting state |
 | --- | --- | --- | --- |
-| `station/<station_id>/login` | Publish to register a team at the station | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
-| `station/<station_id>/start` | Publish when that team's game starts | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
-| `station/<station_id>/complete` | Publish when that team's game finishes | `{"nfc_uuid":"AA BB CC 01"}` | `station/<station_id>/status` |
-| `station/<station_id>/review` | Publish the team's review score after completion | `{"nfc_uuid":"AA BB CC 01","review_score":2}` | `station/<station_id>/status` |
-| `station/<station_id>/status` | Subscribe for action replies; publish a JSON GET to query state | `{"request":"GET"}` | Same topic, as JSON |
-| `station/<station_id>/nextStation` | Subscribe for the destination sent automatically after a successful review | No station request | Same topic, as plain text, e.g. `station02` |
-| `station/<station_id>/servertime` | Subscribe for time replies; publish a JSON time request | `{"request":"GET"}` | Same topic, as JSON |
-| `station/<station_id>/test` | Subscribe, then publish plain `1` to check communication | `1` (no quotes or JSON wrapper) | Same topic, plain `2` |
+| Boot, reconnect, or check current state | `/status` | `{"request":"GET"}` | Read saved state; no game change |
+| Team scans its chip while station is `idle` | `/login` | `{"uuid":"AA BB CC 01"}` | Resolve team, check availability → `logged_in` |
+| Logged-in team starts playing | `/start` | `{"team_id":"Team-01"}` | Record start time → `running` |
+| Game finishes | `/complete` | `{"team_id":"Team-01"}` | Record completion time → `reviewing` |
+| Team submits its rating | `/review` | `{"team_id":"Team-01","score":2}` | Save rating → automatic next-station handoff → `idle` |
 
-Request fields:
+| Field | What goes here? |
+| --- | --- |
+| `uuid` | Scanned chip ID. Used **only for login**; maps from database `team.id` to `team.name`. |
+| `team_id` | Resolved **team name** from the login reply, e.g. `Team-01`. Use it for start, complete, and review. |
+| `score` | Integer **0, 1, or 2**. No strings, floats, or booleans. |
 
-| Field | JSON type | Used by |
+Chip IDs are strings: `AA BB CC 01` and `AABBCC01` are different IDs. Use the
+registered spelling. The station ID comes from the topic, not the JSON.
+
+### Backend → station
+
+| Topic | When it arrives | Example payload |
 | --- | --- | --- |
-| `nfc_uuid` | Non-empty string | Required for login, start, complete, and review. Surrounding whitespace is trimmed. |
-| `review_score` | Integer `0`, `1`, or `2` | Required for review. `"2"`, `2.0`, `true`, and `null` are invalid. |
-| `request` | String `"GET"` | Status and server-time queries. The status query must contain only this field. |
+| `/status` | Accepted login/start/complete, or status query | `{"status":"logged_in","team_id":"Team-01"}` |
+| `/status` | Review handoff finished, or query of a free station | `{"status":"idle","team_id":null}` |
+| `/error` | Request succeeded — **this topic also carries OK** | `{"return":"OK","action":"login","team_id":"Team-01"}` |
+| `/error` | Request failed | `{"return":"ERROR","action":"review","team_id":"Team-01","error_code":"INVALID_REVIEW_SCORE","message":"Review score must be 0, 1, or 2."}` |
+| `/nextStation` | Automatically after a saved review | `{"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}` |
 
-For example, a review request is:
+`status` is always `idle`, `logged_in`, `running`, or `reviewing`.
+`action` identifies the request: `login`, `start`, `complete`, `review`, or `status`.
+On errors, `team_id` may be `null` if the backend could not identify the team.
+Stations **receive only** on `/error` and `/nextStation`; do not publish there.
 
-```json
-{"nfc_uuid":"AA BB CC 01","review_score":2}
-```
+### What must the station wait for?
 
-The old bare UUID, semicolon-separated review, and plain `1` status request are
-no longer accepted. Update station publishers together with the backend.
-Extra action fields are ignored; they cannot override the station or action in
-the topic. Replies keep their existing formats: status/errors and time are JSON,
-and the backend's `nextStation` destination is still plain text.
+| Request | Required successful replies |
+| --- | --- |
+| `login` / `start` / `complete` | Expected `/status` **and** matching `/error` with `return: "OK"` |
+| `review` | `/nextStation` routing result (including a null destination) **and** `/status` with `idle` / null team **and** `/error` with review OK |
+| Status query | Current `/status` **and** `/error` with `action: "status"`, `return: "OK"` |
 
-Stations have publish permission on the four action topics, and publish/subscribe
-permission on their own `status`, `servertime`, and `test` topics. Stations only subscribe
-to their own `nextStation` topic; the backend publishes to it. The required backend ACL
-rule for that output is `topic write station/+/nextStation`, and the station rule
-is `pattern read station/%u/nextStation`. There are no replies on the action topics
-themselves. The separate `servertime` topic remains available.
+Keep **one request outstanding per station**. Match replies by `action` and team;
+for login, the team in status and OK must agree. Review OK and nextStation carry
+the finishing team; the idle status carries `null`. Accept replies in any order
+and tolerate duplicates. There are no request IDs to distinguish repeated attempts.
 
-### 3. Game actions and their required order
+Status updates arrive **automatically** after actions. Do not send a GET after
+every action. On the shared `/status` topic, ignore your echoed GET; process only
+replies containing `status` and `team_id`.
 
-Each station has its own persistent database state. New station rows start at
-`idle`; restarting the controller preserves existing states, results, and completed
-visits. Station requests follow this order; the final reset is an automatic
-controller action after the destination message is acknowledged by the broker:
+## 3. One complete visit
 
 ```mermaid
 stateDiagram-v2
-    [*] --> idle
-    idle --> login: login + NFC UUID
-    login --> start: start + NFC UUID
-    start --> complete: complete + NFC UUID
-    complete --> review: review + NFC UUID and score
-    review --> idle: nextStation acknowledged and idle logged
+    idle --> logged_in: login accepted
+    logged_in --> running: start accepted
+    running --> reviewing: complete accepted
+    reviewing --> idle: review saved + nextStation handoff
 ```
 
-| Publish action | Allowed current state | Meaning and payload |
-| --- | --- | --- |
-| `login` | `idle` | Send the scanned NFC UUID to register the team. The controller resolves the team name. |
-| `start` | `login` | Send an NFC UUID belonging to the logged-in team when your station starts its game. |
-| `complete` | `start` | Send an NFC UUID belonging to the same team when the game finishes. |
-| `review` | `complete` | Send `{"nfc_uuid":"AA BB CC 01","review_score":2}`. The score must be a JSON integer: `0`, `1`, or `2`. |
-
-A team can complete each station **only once per round**. After Team-01 completes
-station01, playing station02 does not allow it to return and play station01 again.
-A repeat login at an idle station returns `status: "error"`, `team_id: "Team-01"`,
-and `error_code: "STATION_ALREADY_COMPLETED"` on that station's `/status` topic.
-The station stays idle, and the original result, timings, and review remain
-unchanged. Other teams can still play that station.
-
-Rounds are counted **per team**, starting at 1. Once a team has completed and
-reviewed all configured stations (normally station01–station05), its next accepted
-login automatically starts the next round. The same NFC UUID can then be handed
-to another group and used at station01 again. No reset or extra MQTT field is
-needed. Merely completing station05 does not unlock a new round if another
-station or review is still missing. Previous rounds' results and events are kept.
-
-The protocol defines the numeric review values but does not assign them UI labels.
-Agree on the meaning of 0, 1, and 2 with the project team. The score is saved in the
-database; it is not included in the MQTT status reply.
-
-The station stays occupied by the logged-in team through `login`, `start`,
-`complete`, and the review handoff. A new login while occupied receives
-`STATION_BUSY`; out-of-order `start`, `complete`, and `review` requests receive
-`INVALID_STATE`. A different known team receives `TEAM_MISMATCH` when attempting
-the next action for an occupied station.
-A successful review finishes the visit in this order:
-
-1. Validate the review and save it in PostgreSQL.
-2. Set the station state to `review`, keeping the current team ID.
-3. Publish `{"status":"review","team_id":"Team-01"}` on the station's `/status` topic.
-4. Automatically publish the next station's name on the **sending station's**
-   `/nextStation` topic. For example, publish plain text `station02` to
-   `station/station01/nextStation`.
-5. Wait for the broker to acknowledge the QoS-1 destination message, save an `idle`
-   event, and reset the original station to `{"status":"idle","team_id":null}`
-   so it can accept the next login. The `idle` log entry records the team that
-   finished the visit; the live state clears the team ID.
-
-`nextStation` is a separate output topic, not a value of the `status` field. The
-station does not send a next-station request or an `idle` action. There is no
-separate application-level acknowledgement for the destination in this protocol.
-The broker's acknowledgement confirms receipt by the broker, not that the station
-application has processed the destination. While that acknowledgement or the
-`idle` database write is pending, a status query still returns `review`.
-
-For now, routing simply uses the next station number: `station01` goes to
-`station02`, and the last configured station goes back to `station01`. This rule
-does not check availability or skip stations the team has already completed. It
-does not reserve the destination or log the team in there. After all five reviews,
-the login at station01 starts the next round. If the round is still unfinished,
-returning to a completed station produces `STATION_ALREADY_COMPLETED`.
-There is no separate end-of-round message; `nextStation` stays plain text.
-
-NFC UUIDs must match entries in [gameController/config.py](gameController/config.py)
-under `NFC_TEAMS`. The current test mappings are:
-
-| NFC UUID sent by the station | Team ID returned by the controller |
-| --- | --- |
-| `AA BB CC 01` | `Team-01` |
-| `AA BB CC 02` | `Team-02` |
-| `AA BB CC 03` | `Team-03` |
-| `AA BB CC 04` | `Team-04` |
-| `AA BB CC 05` | `Team-05` |
-
-These are example chip IDs. Give your real NFC UUIDs to the backend group so they
-can configure the mapping. Matching is case-sensitive and internal spaces matter;
-the controller only removes surrounding whitespace. A station number and a team
-number are independent: a configured team can log in at an idle station it has
-not already completed in the current round, or start a new round after all reviews.
-
-### 4. Status replies and read-only queries
-
-Subscribe to `station/<station_id>/status` and `station/<station_id>/nextStation`
-**before publishing actions**. Wait for the broker's subscription acknowledgement
-(SUBACK), then send the request. After all checks pass, the database commit succeeds,
-and the new state is set, the controller automatically publishes a JSON status reply:
-
-```json
-{"status":"login","team_id":"Team-01"}
-```
-
-| Field | Meaning |
-| --- | --- |
-| `status` | `idle`, `login`, `start`, `complete`, `review`, or `error` |
-| `team_id` | The resolved team name, or JSON `null` if no team is assigned/identified |
-
-The topic identifies the station. Successful replies have no `station_id`, NFC UUID,
-request ID, timestamp, or review score. All game request errors add `action`,
-`error_code`, and `message`, as documented in section 6.
-
-To ask for the current state without changing it, publish exactly
-`{"request":"GET"}` to `station/<station_id>/status`. Only this JSON object is a
-status query. Invalid queries receive `INVALID_STATUS_REQUEST`; invalid UTF-8,
-JSON, or non-object payloads receive `INVALID_PAYLOAD`. Recognizable status/error
-replies are ignored by the controller to prevent response loops. For an unused
-station, the reply is:
-
-```json
-{"status":"idle","team_id":null}
-```
-
-Because queries and replies use the same topic, your subscription can receive your
-own `{"request":"GET"}` message. Ignore it. Accept only JSON objects with the expected `status` and
-`team_id` fields, and ignore retained messages. The controller's status replies use
-QoS 1 and `retain=false`; subscribing alone does not request a fresh status.
-
-The review reply confirms that the review was accepted. It is followed by the
-plain-text destination on `/nextStation` and the controller's reset to `idle`.
-A status query after that reset returns `{"status":"idle","team_id":null}`;
-it does not repeat the previous review reply or destination.
-
-### 5. Example: one complete station visit
-
-The message flow for a successful login is:
+The station stays occupied from accepted login through the completed handoff.
+Wrong-order actions, another login, and actions from another team are rejected.
+**There are no automatic game/stage timeouts.**
 
 ```mermaid
 sequenceDiagram
     participant S as Station station01
-    participant B as MQTT broker
-    participant C as Game controller
-    participant D as PostgreSQL
-
-    Note over B,C: Controller is running and subscribed to station/#
-    S->>B: SUBSCRIBE station/station01/status (QoS 1)
-    B-->>S: SUBACK
-    S->>B: PUBLISH station/station01/login: {"nfc_uuid":"AA BB CC 01"}
-    B->>C: Deliver login request
-    C->>C: Check state and resolve NFC UUID
-    C->>D: Lock station, check previous result, and save login state, result and event
-    D-->>C: Transaction committed
-    C->>B: PUBLISH station/station01/status
-    B-->>S: {"status":"login","team_id":"Team-01"}
-    Note over S,C: Station can now start the game and send the start action
+    participant B as Backend via MQTT
+    S->>B: /login {"uuid":"AA BB CC 01"}
+    Note right of B: Resolve chip to Team-01, validate, save
+    B-->>S: /status {"status":"logged_in","team_id":"Team-01"}
+    B-->>S: /error {"return":"OK","action":"login","team_id":"Team-01"}
+    S->>B: /start {"team_id":"Team-01"}
+    Note right of B: Save running and start time
+    B-->>S: /status running + Team-01
+    B-->>S: /error OK + action start + Team-01
+    S->>B: /complete {"team_id":"Team-01"}
+    Note right of B: Save reviewing and completion time
+    B-->>S: /status reviewing + Team-01
+    B-->>S: /error OK + action complete + Team-01
+    S->>B: /review {"team_id":"Team-01","score":2}
+    Note right of B: Save rating, then perform handoff
+    B-->>S: /nextStation {"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}
+    Note right of B: After broker ACK, save idle and clear team
+    B-->>S: /status {"status":"idle","team_id":null}
+    B-->>S: /error {"return":"OK","action":"review","team_id":"Team-01"}
 ```
 
-Connect as `station01`, subscribe to both `station/station01/status` and
-`station/station01/nextStation`, and wait for SUBACK.
-Then perform these steps, waiting for the matching JSON reply before advancing:
+Compact labels such as `running + Team-01` use the JSON shapes in the reply table.
+Every successful action is saved before its confirmation is sent. A team can
+complete each station once per round; after all five reviews, its next accepted
+login starts a new round.
 
-| Step | Publish topic | Exact request payload | Expected JSON reply on `station/station01/status` |
-| --- | --- | --- | --- |
-| Check initial state | `station/station01/status` | `{"request":"GET"}` | `{"status":"idle","team_id":null}` in a fresh database |
-| Scan the team's chip | `station/station01/login` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"login","team_id":"Team-01"}` |
-| Start the game | `station/station01/start` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"start","team_id":"Team-01"}` |
-| Finish the game | `station/station01/complete` | `{"nfc_uuid":"AA BB CC 01"}` | `{"status":"complete","team_id":"Team-01"}` |
-| Submit the review | `station/station01/review` | `{"nfc_uuid":"AA BB CC 01","review_score":2}` | `{"status":"review","team_id":"Team-01"}`; then wait for the destination on `/nextStation` |
-| Check state after the handoff | `station/station01/status` | `{"request":"GET"}` | `{"status":"idle","team_id":null}` |
+## 4. Automatic next station
 
-The end of the visit is automatic after the single review request:
+**`nextStation` is a message, not a state or a request.** It is sent to the
+**current station's** topic, e.g. `station/station01/nextStation`. The payload
+names the destination or reports that the round is complete. It does not log
+the team into the destination or reserve it.
+
+### Routing payload
+
+Subscribe to your own `/nextStation` topic before submitting the review. The
+backend sends a **JSON object**, with QoS 1 and `retain=false`:
+
+```json
+{"next_station":"station04","team_id":"Team-01","round":1,"routing_status":"available"}
+```
+
+| Field | Type | How to use it |
+| --- | --- | --- |
+| `next_station` | String or `null` | Destination station ID. Check for `null` before displaying directions. |
+| `team_id` | String | Finishing team's name, as returned by login. Match it to the team being reviewed. |
+| `round` | Integer | The finishing visit's round, not the next round. |
+| `routing_status` | String | Use the outcome table below to choose directions, a waiting notice, or a completion message. |
+
+### Selection and handoff
 
 ```mermaid
-sequenceDiagram
-    participant S as Station station01
-    participant C as Game controller via MQTT
-    participant D as PostgreSQL
-
-    Note over S,C: Station already subscribes to status and nextStation
-    S->>C: station/station01/review: {"nfc_uuid":"AA BB CC 01","review_score":2}
-    C->>C: Validate current team, state, and score
-    C->>D: Save review state, result, score and event in one transaction
-    D-->>C: Commit successful
-    C-->>S: station/station01/status: {"status":"review","team_id":"Team-01"}
-    C-->>S: station/station01/nextStation: station02
-    Note over C: Wait for the broker's nextStation acknowledgement
-    C->>D: Set idle, clear current team and score, and save idle event for Team-01
-    D-->>C: Commit successful
-    Note over S,C: Station01 can now accept a new login
+flowchart LR
+    R[Valid review received] --> S[Save score; remain reviewing]
+    S --> D[Check saved round progress and live station occupancy]
+    D --> N[Publish nextStation routing result]
+    N --> A[Broker acknowledges delivery]
+    A --> I[Save idle; clear assigned team]
+    I --> O[Publish idle status and review OK]
 ```
 
-Keep the station connection open to receive both the review status and the
-next-station destination. Read the `/status` payload as JSON and the `/nextStation`
-payload as a plain UTF-8 station name, without JSON quotes or an object wrapper.
-The backend sends both messages with QoS 1 and `retain=false`.
-
-Once the handoff resets the station to `idle`, the next team can send `login`.
-Run one action at a time for each station:
-there are no request IDs to distinguish concurrent requests. Check both the status
-and team ID when matching an action reply. An MQTT publish acknowledgement confirms
-broker delivery; use the JSON reply to confirm that the controller accepted the action.
-
-### 6. Errors, timeouts, and reconnects
-
-Rejected `login`, `start`, `complete`, `review`, and status queries receive an error
-on the station's `/status` topic. For example, an invalid review score returns:
-
-```json
-{
-  "status": "error",
-  "team_id": "Team-01",
-  "action": "review",
-  "error_code": "INVALID_REVIEW_SCORE",
-  "message": "Review score must be 0, 1, or 2."
-}
-```
-
-Use `error_code` in your station logic; `message` is readable text for display.
-`action` identifies the rejected request (or is `null` if the topic has no action).
-`team_id` is the requesting team when
-known, otherwise `null`; it does not replace the station's current team.
-Successful status replies retain their existing two-field format. Every game
-request error uses the five-field format above, including status-query errors.
-
-**Errors are MQTT replies, never database states or events.** A rejected request
-leaves `station_state`, `results`, and `station_events` unchanged. Checks
-that depend on station state run under the database transaction lock. Database
-write failures roll back the transaction rather than saving a partial result.
-For example, an invalid review leaves the station at `complete`, allowing the
-same team to correct its score and retry. A rejected login leaves the previous
-team and state intact. Error replies never trigger a next-station handoff.
-
-In your station application, handle `status: "error"` before treating a message
-as a successful action. Match `action` to the pending request,
-display `message`, and choose the next step using `error_code`. Keep the current
-game state and team assignment; do not store `error` as the station's state or
-wait for a destination after a rejected review. If local state is uncertain,
-publish `{"request":"GET"}` to `/status` and use the fresh reply to synchronize.
-
-| `error_code` | Meaning | What the station should do |
-| --- | --- | --- |
-| `INVALID_PAYLOAD` | Invalid UTF-8/JSON, a JSON value that is not an object, or missing/empty/non-string `nfc_uuid` for a game action | Send a valid JSON object; actions require `nfc_uuid`, while status queries use `{"request":"GET"}`. |
-| `INVALID_TOPIC` | The topic does not have exactly three non-empty levels | Use `station/<station_id>/<action>`. A reply requires a recognizable station ID. |
-| `INVALID_ACTION` | Unsupported game action, including a station publishing `idle` | Use login, start, complete, review, or status. Idle is managed by the controller. |
-| `INVALID_STATUS_REQUEST` | A JSON object on `/status` is neither the exact GET request nor a recognizable reply | Query with exactly `{"request":"GET"}`. |
-| `RETAINED_REQUEST` | The request reached the controller with its retained flag set | Clear the stored retained request and publish future requests with `retain=false`. |
-| `INVALID_REVIEW_SCORE` | `review_score` is missing or is not an integer `0`, `1`, or `2` (strings, booleans, and decimals are rejected) | Correct the JSON score and retry. |
-| `UNKNOWN_TEAM` | NFC UUID is unmapped/invalid, or its team is missing from the database | Check the chip and ask the backend group to configure the team. |
-| `STATION_BUSY` | Login attempted while the station is not idle | Wait for the current team and handoff to finish. |
-| `INVALID_STATE` | Start, complete, or review attempted in the wrong state, including duplicate actions | Query status and follow the action order; do not resend an action already accepted. |
-| `TEAM_MISMATCH` | A known team tries to start, complete, or review another team's game | Use the NFC UUID of the team that logged in. |
-| `STATION_ALREADY_COMPLETED` | This team has already completed this station in the round | Finish the remaining stations and reviews before starting another round. |
-| `STATION_UNAVAILABLE` | Station is outside the configured station list or its database state is missing | Check the station ID and backend initialization. |
-| `DATABASE_ERROR` | Reading or saving the requested action failed | Query status before retrying once the database is available. |
-
-If several checks fail, the reply reports the first error encountered. A reply
-requires a topic beginning with `station/<station_id>`, where the ID contains
-1–50 letters, digits, underscores, or hyphens. Topics without a safe reply address
-are logged as `INVALID_TOPIC` instead. The broker must deliver the request first:
-the supplied ACL blocks unsupported topics, so those normally appear as broker
-permission failures rather than controller replies. Authentication/ACL failures
-and an unavailable controller can still cause a client-side error or timeout.
-
-The controller recognizes status/error replies on `/status` and ignores them,
-including its own errors for unknown stations. `nextStation` is an output topic;
-`servertime` and `test` remain independent services with their documented payloads.
-They are not interpreted as invalid game actions. The plain `1` / `2` communication
-test does not gain JSON error messages. In MQTT 3.1.1, live delivery of a retained
-publish may have its retained flag cleared by the broker; this error detects
-requests actually delivered with that flag, such as stored messages on reconnect.
-
-| Situation | Current controller behavior | What the station should do |
-| --- | --- | --- |
-| Review reply or next-station publish fails, the destination acknowledgement is missing, or saving the final `idle` event fails | Station remains in `review`; it is not released early | Query `status` and contact the backend group. The handoff is retried when the controller reconnects or restarts; duplicate delivery is possible. |
-| Wrong action order or wrong team for `start`/`complete` | Reply with `INVALID_STATE` or `TEAM_MISMATCH`; no database changes | Query status and use the team that logged in. |
-| Malformed topic, unsupported action, or a message delivered with its retained flag set | Reply with `INVALID_TOPIC`, `INVALID_ACTION`, or `RETAINED_REQUEST` when the request reaches the controller and has a reply address | Check the topic, credentials, and `retain=false`. |
-| Broker is reachable but controller is unavailable | No game status reply | Check controller availability with the backend group. |
-
-The review handoff happens **after** the review transaction succeeds. A delivery
-problem at that stage does not undo the accepted review or its database result;
-the committed `review` state is kept for handoff recovery.
-
-#### Example: correct a rejected review
-
-Assume station01 is at `complete` for Team-01. Subscribe to its `/status` and
-`/nextStation` topics before sending requests.
-
-| Step | Topic and payload | Result |
-| --- | --- | --- |
-| Send an invalid score | Publish `{"nfc_uuid":"AA BB CC 01","review_score":9}` to `station/station01/review` | `/status` returns `error_code: "INVALID_REVIEW_SCORE"`; no database rows change and no destination is sent. |
-| Confirm current state | Publish `{"request":"GET"}` to `station/station01/status` | `{"status":"complete","team_id":"Team-01"}` |
-| Correct the score | Publish `{"nfc_uuid":"AA BB CC 01","review_score":2}` to `station/station01/review` | `{"status":"review","team_id":"Team-01"}`, followed by plain `station02` on `/nextStation`. |
-| Finish the handoff | No extra station request | After the broker acknowledges the destination, the controller commits `idle`. A fresh status query returns `{"status":"idle","team_id":null}`. |
-
-```mermaid
-sequenceDiagram
-    participant S as Station station01
-    participant C as Controller via MQTT
-    participant D as PostgreSQL
-    Note over S,D: Existing state is complete, Team-01
-    S->>C: review: {"nfc_uuid":"AA BB CC 01","review_score":9}
-    C-->>S: status: error, action: review, error_code: INVALID_REVIEW_SCORE
-    Note over C,D: State, result and events remain unchanged
-    S->>C: status: {"request":"GET"}
-    C->>D: Read current state
-    D-->>C: complete, Team-01
-    C-->>S: status: complete, team_id: Team-01
-    S->>C: review: {"nfc_uuid":"AA BB CC 01","review_score":2}
-    C->>D: Validate and commit review state, result and event
-    D-->>C: Commit successful
-    C-->>S: status: review, team_id: Team-01
-    C-->>S: nextStation: station02
-    Note over C,D: Broker acknowledgement triggers the idle transaction
-```
-
-Use an MQTT publishing tool to send deliberately invalid payloads. The supplied
-action client validates review scores locally, so it rejects `9` before publishing.
-
-Start a reply timeout after sending a request; the provided clients use five seconds.
-If no reply arrives, query `status` before deciding whether to retry: the controller
-may have accepted the action even if your client missed its reply. Handle duplicate
-deliveries without repeating physical game effects.
-
-After a review, the station may already be back at `idle`. That status alone does
-not contain the destination. If the next-station message was missed, contact the
-backend group; resending review while the station is `idle` is out of order and
-does not request another destination.
-
-After reconnecting, subscribe again, wait for SUBACK, and query `status`. Current
-station states are read from PostgreSQL. Restarting the controller preserves
-occupied stations and their team assignments. Committed `review` states resume
-the next-station handoff on reconnect; review and destination replies may be
-delivered again. This is broker acknowledgement, not confirmation that the Pi
-processed the destination.
-
-### 7. Server time (Berlin time, included in the controller container)
-
-The separate [gameController/servertime.py](gameController/servertime.py) script
-starts automatically alongside the game controller in the **same container**.
-It uses its own MQTT connection and network thread, with client ID
-`<MQTT_CLIENT_ID>_servertime`, and shares the controller's broker settings and
-credentials. No extra Compose service is needed. Rebuild to apply the change:
-
-```sh
-docker compose up -d --build game-controller
-```
-
-For standalone local use, set `MQTT_HOST` to the broker's address in your environment
-(default: `127.0.0.1`) and run the script with Python 3.9+:
-
-```sh
-python -m pip install paho-mqtt==2.1.0 tzdata
-python gameController/servertime.py
-```
-
-Run only one time responder for a broker. The old
-`mqtt-test/servertime/servertime.py` is a legacy UTC example; do not run it alongside
-this service, or clients will receive replies from both.
-
-Subscribe to `station/station01/servertime`, wait for SUBACK, and publish this JSON
-object to the same topic with QoS 1 and `retain=false`:
-
-```json
-{"request":"GET"}
-```
-
-The service replies on that same topic with JSON in this form (example timestamp):
-
-```json
-{"request":"POST","server_time":"2026-01-01T01:00:00+01:00","unix":1767225600}
-```
-
-`server_time` is an ISO 8601 timestamp in **Europe/Berlin**, including its UTC
-offset: `+01:00` in winter (CET), `+02:00` in summer (CEST). The offset changes
-automatically using Python's [zoneinfo](https://docs.python.org/3/library/zoneinfo.html)
-timezone data, which is included in the container. `unix` is seconds since the
-Unix epoch and represents the same instant; it does not receive a timezone offset.
-The service reads the server's system clock, so the server/Pi clock must be correct.
-Ignore your echoed `GET` request and only process objects with `request: "POST"`.
-Time queries do not change game state and do not produce a reply on `/status`.
-Both time and status queries use `{"request":"GET"}`; the topic determines which
-service responds. The time service replies with `request: "POST"`, while the game
-controller replies with `status` and `team_id`.
-Malformed messages, retained requests, and echoed replies are ignored. Replies
-use QoS 1 and `retain=false` and are sent only to the requesting topic. A server
-client can also request time if its MQTT credentials allow access to that topic;
-station clients should use their own assigned station topic as usual.
-
-### 8. Try the protocol with the supplied clients
-
-The game clients provide working examples of subscribing before publishing,
-formatting action payloads, filtering replies, and waiting for a response.
-From the repository root, install their dependency:
-
-```sh
-python -m pip install paho-mqtt==2.1.0
-```
-
-Set `MQTT_HOST` near the top of [clientStatus.py](gameClient/clientStatus.py),
-[clientLogin.py](gameClient/clientLogin.py), [clientServertime.py](gameClient/clientServertime.py),
-or [clientTest.py](gameClient/clientTest.py)
-to `"192.168.1.11"` for the server Pi,
-or `"localhost"` for a broker on your own machine. Then run:
-
-```sh
-# Read current state; enter your station ID when prompted.
-python gameClient/clientStatus.py
-
-# Send one action; prompts ask for station ID, action, NFC UUID, and review score if needed.
-python gameClient/clientLogin.py
-
-# Request the server's Berlin timestamp; enter your station ID when prompted.
-python gameClient/clientServertime.py
-
-# Send plain 1 and wait for plain 2; enter your station ID when prompted.
-python gameClient/clientTest.py
-
-# Automatically play three teams, then an extra round with Team-01; no prompts.
-python gameClient/clientAutoPlay.py
-```
-
-The [auto-play client](gameClient/clientAutoPlay.py) runs Team-01, Team-02, and
-Team-03 one after another. Each starts at station01 and sends `login`, `start`,
-`complete`, and `review` at all five stations, following the backend's
-`nextStation` replies. It waits for `idle` before login and after every handoff,
-then plays another full round with Team-01. On a fresh database, this gives
-Team-01 rounds 1 and 2, and Team-02 and Team-03 round 1 each.
-Edit `MQTT_HOST`, `TEAMS` (team names, registered UUIDs, and review scores),
-`STATION_COUNT`, and `PLAY_SECONDS` at the top of this script. The default play
-delay is zero so it quickly fills the database with **20 results and 100 events**
-(four full rounds, five stations, five events per visit including `idle`). It uses
-review scores 0, 1, and 2 for the three teams. Increase `PLAY_SECONDS` for longer
-recorded playing times. It uses the existing action and status clients with
-these settings.
-
-Run it with the controller and broker available and these teams ready to start
-a round. It creates real game results and events. With round tracking enabled,
-running it again after a successful run adds two more rounds for Team-01 and one
-more round each for Team-02 and Team-03. Round numbers continue from saved history.
-An error or timeout stops the script with exit code 1; it does not reset or resume
-an unfinished round. A busy station is polled for up to 30 seconds (plus any
-in-flight status request). Avoid operating the same station from another client
-during the simulation because replies have no request IDs.
-
-Run the action client once per step in the example visit. Its default NFC UUID is
-`AA BB CC 01`; use a UUID registered by the backend group for real hardware.
-For `review`, the action client subscribes to both `/status` and `/nextStation`
-before publishing. It prints the JSON review confirmation and the plain-text
-destination, then disconnects once both have arrived. It handles either arrival
-order and reports a timeout if either reply is missing. On an error reply it prints
-the full JSON, including the code and message, and stops waiting immediately;
-it does not wait for `/nextStation` or automatically retry. Other actions still wait
-only for their automatic JSON status reply; `clientStatus.py` remains a separate
-read-only query tool.
-
-After changing controller code or the ACL, rebuild the two services on the backend host:
-
-```sh
-docker compose up -d --build mosquitto game-controller
-```
-
-The [server-time client](gameClient/clientServertime.py) subscribes before sending
-`{"request":"GET"}`, ignores its echoed request and retained messages, then prints
-the server's Berlin timestamp and Unix timestamp and disconnects. It waits up to
-five seconds for a reply (`RESPONSE_TIMEOUT`) and exits with code 1 on failure.
-Example output:
-
-```text
-[BERLIN TIME] 2026-01-01T01:00:00+01:00
-[UNIX] 1767225600
-```
-
-The older [mqtt-test/main.py](mqtt-test/main.py) and [mqtt-test/test_pub.py](mqtt-test/test_pub.py)
-use a different JSON action format. Their `backend/timestamp` routing topic and
-JSON `next_station` messages are different from the new station-specific
-`station/<station_id>/nextStation` topic and its plain-text payload. Use the topics
-and JSON action payloads documented above for new station implementations.
-
-### 9. Communication test
-
-Use `station/<station_id>/test` for a simple communication check. For station 1:
-
-1. Subscribe to `station/station01/test` and wait for SUBACK.
-2. Publish exactly `1` to that same topic, with QoS 1 and `retain=false`.
-3. Wait for exactly `2` on the same topic. Ignore your own echoed `1`.
-
-These payloads are single UTF-8 characters (bytes `0x31` and `0x32`), without
-quotes, whitespace, JSON objects, or additional fields. The service only answers
-`1` with `2`; it ignores `2` and other payloads, so replies cannot create a loop.
-Always send non-retained requests. Stored retained requests delivered when the
-service subscribes are ignored.
-
-The separate [communication_test.py](gameController/communication_test.py) script
-starts automatically in the game-controller container, like the time service.
-It uses its own MQTT connection with client ID `<MQTT_CLIENT_ID>_communication_test`
-and the controller's broker settings. It does not call game logic, access the
-database, change station state, or send `/status` messages. A reply confirms
-communication with this service; it does not check database or game readiness.
-
-The [test client](gameClient/clientTest.py) prints `2` and exits with code 0 after
-a reply. It ignores its echoed `1` and retained messages, and exits with code 1
-on failure or after `RESPONSE_TIMEOUT` seconds without a reply (default: 5).
-Run one test at a time per station because replies contain no request ID.
-
-To apply the service and its broker permissions:
-
-```sh
-docker compose up -d --build mosquitto game-controller
-```
-
-For standalone use, set the `MQTT_HOST` environment variable to your broker
-(default: `127.0.0.1`) and run `python gameController/communication_test.py`.
-Run only one responder per broker; the container already starts one.
-
-# Database schema
-
-`gameController/gameLogic.py` owns action validation, transition rules, team
-checks, result/timing decisions, and handoff handling. `db.py` only handles
-database queries, writes, and transactions. The logic runs its checks while the
-database transaction holds the station row lock, so competing requests cannot
-invalidate a check before the corresponding writes commit. `main.py` starts
-game initialization, the controller MQTT client, and separate network threads
-for the server-time and communication test services.
-
-Alembic revision `0002_station_state` defines persistent station state and a
-separate event history for Grafana. The controller reads and updates these tables
-directly, with no in-memory station-state cache. Revision `0003_result_timing`
-provides `started_at` and `completed_at`; the controller records these timestamps
-on accepted start and complete actions. Revision `0004_team_rounds` adds `round`
-to events, results, and occupied station state. Existing records become round 1;
-existing idle stations keep a null round. Apply this migration to an existing
-database without deleting its volume.
-All team and station identifiers are `VARCHAR(50)` strings: `Team-01` and
-`station01`, including primary keys and foreign keys. `station_state` uses
-`team_id` for the assigned team. Only the event row counter (`station_events.id`)
-identifies an event. The new `round` column is a positive integer scoped to a team,
-not a globally shared round counter.
-The existing migrations have been updated for a fresh database rebuild. Reusing
-an old database volume will not convert its numeric IDs or rename `team_name`.
-
-| Table | Purpose |
+| Question | Current behavior |
 | --- | --- |
-| `team` | String primary key `id` such as `Team-01`, plus its name. The unused `signature` column is removed. |
-| `station` | String primary key `station_id` such as `station01`, plus its name. |
-| `station_state` | One current-state row per station: `status`, `team_id`, `round`, `review_score`, and `updated_at`. Idle stations have no team or round. |
-| `results` | One result per team/round/station: `started_at`, `completed_at`, review, and result status. Earlier rounds remain available. |
-| `station_events` | Event history for Grafana: timestamp, station username (e.g. `station01`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
+| How is the destination chosen? | First free, unfinished station after the current number, wrapping 05 → 01. Completed stations in this team's round are skipped. |
+| All remaining stations busy? | Send the team to the next unfinished, occupied station in that order, marked `queued`. Wait there until it becomes idle. |
+| All five reviews done? | `next_station: null`, `routing_status: "round_complete"`. Show that the round is finished. A later login starts a new round. |
+| Is the destination guaranteed free on arrival? | No reservation is made. `available` means idle when checked; another team may arrive first. Login still checks availability. |
+| Must the station send a separate acknowledgement? | No. The backend waits for the MQTT **broker's** acknowledgement, not proof that the station displayed the destination. |
+| When may the current station accept another team? | After confirmed `idle`; finish collecting the review replies first. |
+| What should the station do with the destination? | Display it to the finishing team, including a waiting notice for `queued`. That team scans its chip at the destination when it is idle. |
 
-NFC UUIDs and their team mapping stay exclusively in `gameController/config.py`.
-The resolved team string is used consistently in `team.id`,
-`results.team_id`, `station_state.team_id`, and `station_events.team_id`.
-The station string is used consistently in every `station_id` column.
-Startup fills each catalog name with the same string as its ID.
+| `routing_status` | `next_station` | Meaning |
+| --- | --- | --- |
+| `available` | Station name | Free and unfinished when checked |
+| `queued` | Station name | Unfinished but currently occupied; go there and wait |
+| `round_complete` | `null` | All configured stations reviewed in this round |
+| `no_available_station` | `null` | No valid destination, e.g. missing station state or unfinished reviews elsewhere; contact the backend group |
 
-`station_state` accepts `idle`, `login`, `start`, `complete`, and `review`.
-An idle station has no team; every other state requires a known team name.
-Only `review` has a score (0, 1, or 2). No next-station destination is stored in
-this table. The planned routing logic will choose a free station when the team
-finishes; the current controller still uses the temporary sequential routing rule.
-State transitions and acknowledgement handling remain controller responsibilities.
-The controller locks the station and team rows, checks the action against the current
-state, and writes state, result, and event in one transaction. The team lock also
-serializes round decisions when requests arrive at different stations. It refreshes
-`updated_at` on each state change and sends a success reply only after commit.
-Failed writes roll back together; duplicate or out-of-order actions add no event.
+`round` identifies the finishing visit's round. Every routing outcome still ends
+with idle status and review OK after broker acknowledgement. A null destination
+is a valid response, not a reason to resend the review. Routing can be recomputed
+on controller reconnect while a handoff is pending, so a retried suggestion may change.
 
-### Current state, results, and events
+### Routing examples
 
-`station_state` is the live snapshot: **what is happening at this station now?**
-Its single row for a station is updated as that station moves through the game.
-For example, station01 can show `status = start` and `team_id = Team-01`.
-After the next-station handoff, that same row becomes `idle`, with no team
-or review score, and with `round = NULL`. It does not keep previous visits.
+All examples use five stations and the finishing team's **current round**.
+The controller checks every eligible free station before falling back to a busy
+one; it does not simply send the team to the next station number.
 
-`results` describes **how a particular team did at a particular station in one round**.
-`started_at` is set when `start` is accepted, and `completed_at` when `complete`
-is accepted. Both are timezone-aware timestamps. Login waiting time and review
-time are excluded. Before starting, both are null; during play, only `started_at`
-is filled. A completion requires a start and cannot precede it. No separate
-duration column is needed: duration is `completed_at - started_at`.
-The primary key is `(team_id, round, station_id)`. Before accepting
-login, the controller checks that round's result under the station and team locks.
-A result with `completed_at` set, or status `complete`/`review`, blocks another visit
-by the same team in that round. Only a missing or unfinished result can be initialized on login.
-Rejected repeat visits do not change any state, result, or event rows.
+| Situation after review | Routing reply |
+| --- | --- |
+| Leaving station01; station02 is busy, station03 was already completed, station04 and station05 are free and unfinished | `available`, `next_station: "station04"` |
+| Leaving station04; station05 was completed, station01 is busy, station02 is free and unfinished | `available`, `next_station: "station02"` (wrap around) |
+| Leaving station01; only station02 and station04 are unfinished, and both are busy | `queued`, `next_station: "station02"` |
+| Every configured station has a completed game and a saved review | `round_complete`, `next_station: null` |
+| All games were completed, but a review at another station is still missing | `no_available_station`, `next_station: null` (completed stations cannot be played again) |
 
-The controller reads the team's latest round from its saved results. When every
-configured station has a completed result with status `review`, the next accepted
-login creates a result in `round + 1`. The increment and login are one transaction,
-so a rejected or failed login cannot advance the round. Restarting the controller
-preserves this history. One team's new round does not advance another team's round.
+For example, a finished round produces:
 
-For example, Team-01's first five visits generate round-1 events. After the final
-review, the next login at station01 generates a round-2 event and a separate
-round-2 result. All subsequent transitions for that visit use round 2. An old
-handoff acknowledgement still logs `idle` under its original visit's round, even
-if the team has already started its next round at another station.
-
-`station_events` is the chronological history: **what changed, and when?**
-Each accepted transition adds a new row instead of replacing the previous one.
-For example, Team-01 can have `login` at 14:00, `start` at 14:01, `complete` at
-14:04, and later `review` and `idle` events. The result retains the three-minute
-playing time even after the live station state is reset. An `idle` event keeps
-the finishing team's name and round for history; the live idle state has neither.
-
-The controller performs these writes:
-
-| Accepted transition | `station_state` | `results` | `station_events` |
-| --- | --- | --- | --- |
-| `login` | Set team, round, and `login`. | Start a new round if all stations were reviewed; otherwise reject a replay in this round. Create or reset its unfinished result. | Append `login` with the accepted round. |
-| `start` | Set `start`. | Set `started_at` and result status. | Append `start`. |
-| `complete` | Set `complete`. | Set `completed_at` and result status. | Append `complete`. |
-| `review` | Set `review` and score. | Save review and result status. | Append `review` with score. |
-| Handoff acknowledged | Set `idle` and clear team, round, and score. | Keep the finished result and its times. | Append `idle` with the finishing team's round. |
-
-Each transition uses the same database timestamp for its state, result, and
-event writes. A status query only reads committed state and does not create an
-event. MQTT message IDs are kept locally to match acknowledgements to reviews;
-they are not the game state. An acknowledgement for an older review cannot
-release a newer visit. On reconnect, pending handoffs are found in the database.
-If PostgreSQL is unavailable, requests receive an error rather than an invented
-idle state; a failed handoff release stays in review until a reconnect retries it.
-
-At startup, the controller adds team names from `NFC_TEAMS`, station names from
-`STATION_COUNT`, and missing idle state rows. Existing occupied states and results
-are preserved. UUIDs are never inserted. Old event history is not used to guess
-state for a database that predates the state table. Existing team names must be
-unique before applying this migration.
-Existing result timestamps must also satisfy the timing rule before applying
-`0003_result_timing`; inconsistent records are not silently rewritten.
-
-Apply migrations before starting the updated controller (PostgreSQL must be running):
-
-```sh
-docker compose stop game-controller
-docker compose build backend
-docker compose run --rm --no-deps backend true
-docker compose up -d --build game-controller
+```json
+{"next_station":null,"team_id":"Team-01","round":1,"routing_status":"round_complete"}
 ```
 
-The `backend` service runs `alembic upgrade head` once and exits successfully.
-Compose waits for that success before starting `game-controller`. Both Alembic
-and the controller use the database settings in `gameController/config.py`,
-overridden by `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, and `DB_PASSWORD`.
-Compose supplies the same PostgreSQL credentials to both services.
+Show a completion message and finish collecting the idle status and review OK.
+Do not automatically log the team into station01: a later chip scan starts its
+next round. For `no_available_station`, finish the same handoff and ask the backend
+group to check missing reviews or station records. A status GET does not request
+another routing decision.
 
-Start or update the stack with `docker compose up -d --build`. For local
-execution, install `requirements.txt` and `tzdata` (needed where system timezone
-data is absent), run `alembic upgrade head` from the project root, then run
-`python gameController/main.py` with the same DB environment.
-The controller no longer creates or changes tables itself.
-The migration removes any old `team.signature` values. A downgrade recreates an
-empty signature column and drops `station_state`, but deliberately keeps the
-event history because the current controller still uses it.
-Downgrading `0004_team_rounds` is refused once round-2 or later records exist,
-because the old schema cannot keep multiple rounds of results.
+For the database predicates and recovery details, see
+[Choosing the next station in the backend guide](docs/backend.md#choosing-the-next-station).
 
-For a Grafana table panel showing the event history:
+## 5. Reconnect and errors
 
-```sql
-SELECT created_at AS "time", station_id, team_id AS team_name,
-       "round", event_type AS status, review_score
-FROM station_events
-WHERE $__timeFilter(created_at)
-ORDER BY created_at DESC, id DESC;
-```
-
-For a Grafana table panel showing completed playing times per team and station:
-
-```sql
-SELECT r.completed_at AS "time", t.name AS team_name, s.name AS station_name,
-       r."round", r.started_at, r.completed_at,
-       EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) AS duration_seconds
-FROM results AS r
-JOIN team AS t ON t.id = r.team_id
-JOIN station AS s ON s.station_id = r.station_id
-WHERE r.completed_at IS NOT NULL AND $__timeFilter(r.completed_at)
-ORDER BY r.completed_at DESC, t.name, s.name;
-```
-
-Set the `duration_seconds` field unit to seconds in Grafana. The panel shows
-results as soon as the controller accepts a complete action.
-
-For a table panel showing the current station state:
-
-```sql
-SELECT s.name AS station, ss.team_id, ss.status, ss.review_score, ss.updated_at
-FROM station_state AS ss
-JOIN station AS s ON s.station_id = ss.station_id
-ORDER BY s.station_id;
-```
-
-Enable the dashboard refresh interval to show new events and current states.
-Do not time-filter the current-state panel: an occupied station must remain
-visible even when its last change happened outside the dashboard time range.
-
-# grafana
-
-## datasource setup
-- Grafana website -> http://localhost:3000/ <br>
-- Connections -> Add new Datasource <br>
-```
-Host URL:   'postgres:5432'
-DB name:    'stations'
-Username:   'stationuser'
-Password:   'changeme'
-TLS/SSL:     disable
-```
-<br>
-After that import the test dashboard (or any other from us) <br>
-(you may have to click on every panel and click 'run query' once for it to show default data) <br>
-
-# Flowchart for one station
-
-This diagram uses the implemented topics, payloads, states, and retry behavior.
-All requests and replies use QoS 1 and `retain=false`. Success replies arrive as
-JSON on `/status`; the destination arrives as plain text on `/nextStation`.
+On boot or reconnect, subscribe first and query the saved state. **Do not assume
+`idle` after restarting a Pi.** State lives in PostgreSQL.
 
 ```mermaid
 flowchart TD
-    A["Subscribe to station/station01/status and nextStation; wait for SUBACK"] --> B["Publish login JSON<br/>nfc_uuid = AA BB CC 01"]
-    B --> C{"Known team, idle station,<br/>station not already completed by team?"}
-    C -->|No| D["Return login error code<br/>Keep database state unchanged"]
-    D --> E["Read status; correct request or choose an uncompleted station"]
-    E --> B
-    C -->|Yes| F["Commit login state, result and event<br/>Reply status: login"]
-    F --> G["Publish start JSON<br/>nfc_uuid = AA BB CC 01"]
-    G --> H["Commit start and start time<br/>Reply status: start"]
-    H --> I["Play game, then publish complete JSON<br/>nfc_uuid = AA BB CC 01"]
-    I --> J["Commit complete and completion time<br/>Reply status: complete"]
-    J --> K["Publish review JSON<br/>nfc_uuid = AA BB CC 01, review_score = 2"]
-    K --> L{"Correct team, complete state,<br/>valid payload and score?"}
-    L -->|No| M["Return review error code<br/>Keep database state unchanged"]
-    M --> N["Read status; correct review or wait for the required state"]
-    N --> K
-    L -->|Yes| O["Commit review state, result and event<br/>Reply status: review"]
-    O --> P["Publish station02 on station/station01/nextStation"]
-    P --> Q{"Broker acknowledges destination?"}
-    Q -->|Yes| R["Commit idle and idle event<br/>Clear current team; keep completed result"]
-    Q -->|No| S["Remain in review<br/> 
-    Resume handoff on controller reconnect"]
-    S --> P
-    R --> T["Station available for a team that has not completed it"]
-    T --> B
-
-    classDef rejected fill:#f8d7da;
-    classDef accepted fill:#d1e7dd;
-    class D,M rejected;
-    class F,H,J,O,R accepted;
+    C[Connect and subscribe; wait for SUBACK] --> Q[Send GET on /status]
+    Q --> W[Wait for status and status-query OK]
+    W --> D{Returned state}
+    D -->|idle| I[Ready for a chip scan]
+    D -->|logged_in| L[Restore team; offer Start]
+    D -->|running| R[Restore team; resume station UI]
+    D -->|reviewing| V[Restore team; review or handoff pending]
 ```
 
-Database write failures return an error and roll back the action transaction.
-Out-of-order or wrong-team `start`/`complete` requests return `INVALID_STATE` or
-`TEAM_MISMATCH` without changing the database; the diagram shows their successful
-path. The controller does not publish an
-automatic idle status reply after handoff; query `/status` to read the new state.
+A `reviewing` status does not reveal whether a score is already saved. If a
+review was sent but its outcome is unknown, do not assume it needs resubmitting.
+The controller resumes saved handoffs on **controller** restart/MQTT reconnect.
+A **station** reconnect only reads state; it does not trigger a handoff replay.
+
+```mermaid
+sequenceDiagram
+    participant S as Station
+    participant B as Backend
+    S->>B: /review {"team_id":"Team-01","score":9}
+    B-->>S: /error ERROR + INVALID_REVIEW_SCORE
+    Note over S,B: State remains reviewing; no success status or destination
+    S->>B: /review {"team_id":"Team-01","score":2}
+    B-->>S: /nextStation destination
+    B-->>S: /status idle + null
+    B-->>S: /error OK + action review + Team-01
+```
+
+| Situation | Station response |
+| --- | --- |
+| Validation error | Keep current state; correct the request using `error_code` / `message`. |
+| `HANDOFF_ERROR` | Review is already saved. Query status and contact the backend group if it stays pending; do not start another review. |
+| No reply / connection lost | Outcome is unknown. Reconnect and query status before deciding to retry. Authentication/ACL failures may produce no backend reply. |
+| Idle after reconnect, but destination was missed | GET does not replay the destination. Contact the backend group. |
+
+<details>
+<summary>Full error-code reference</summary>
+
+| Code | Meaning |
+| --- | --- |
+| `INVALID_PAYLOAD` | Invalid JSON/UTF-8, non-object payload, or missing/non-string ID |
+| `INVALID_TOPIC` | Topic is not `station/<station_id>/<action>` |
+| `INVALID_ACTION` | Unsupported action; no station request to set idle directly |
+| `INVALID_STATUS_REQUEST` | Query must be exactly `{"request":"GET"}` |
+| `RETAINED_REQUEST` | Backend received a retained request |
+| `INVALID_REVIEW_SCORE` | Score must be an integer 0, 1, or 2 |
+| `UNKNOWN_TEAM` | Unknown chip ID or team |
+| `STATION_BUSY` | Login at an occupied station |
+| `INVALID_STATE` | Wrong action order, duplicate action, or review already saved |
+| `TEAM_MISMATCH` | Requesting team does not own this station |
+| `STATION_ALREADY_COMPLETED` | Team already completed this station in this round |
+| `STATION_UNAVAILABLE` | Station is not configured or its database state is missing |
+| `DATABASE_ERROR` | Database read/write failed |
+| `HANDOFF_ERROR` | Review saved, but destination delivery or idle reset failed |
+
+Validation failures leave game data unchanged. A handoff failure keeps the already
+saved review. Errors are sent only on `/error`; there is no error station state.
+
+</details>
+
+## 6. Time and connection check
+
+These helpers work independently of the game. Subscribe to the relevant topic
+before sending; their replies use the **same topic** and produce no game status
+or `/error` acknowledgement.
+
+| Purpose | Topic suffix | Send | Receive |
+| --- | --- | --- | --- |
+| Server time | `/servertime` | `{"request":"GET"}` | `{"request":"POST","server_time":"2026-01-01T01:00:00+01:00","unix":1767225600}` (example) |
+| Communication check | `/test` | Exactly `1` | Exactly `2` |
+
+Time is ISO 8601 in **Europe/Berlin**, with the seasonal UTC offset. `unix` is
+seconds since the Unix epoch. Ignore echoed GET messages; accept `request: "POST"`.
+For `/test`, send the single character `1`, without quotes or whitespace, and
+ignore its echo. A `2` confirms communication with that helper, not database readiness.
+
+## 7. Try it
+
+Install the client dependency, set `MQTT_HOST` at the top of the chosen script to
+`192.168.1.11` (server Pi) or `localhost` (local Docker), then run from the repo root:
+
+```sh
+python -m pip install "paho-mqtt>=2.0"
+```
+
+| Command | Purpose |
+| --- | --- |
+| `python gameClient/clientStatus.py` | Query state without sending a game action |
+| `python gameClient/clientLogin.py` | Send one login/start/complete/review; prompts for inputs |
+| `python gameClient/clientServertime.py` | Read server time |
+| `python gameClient/clientTest.py` | Send 1, wait for 2 |
+| `python gameClient/clientAutoPlay.py` | Run three teams through five stations, then an extra round with Team-01 |
+
+Example chip IDs `AA BB CC 01` … `AA BB CC 05` map to `Team-01` … `Team-05`.
+The action client waits for all required replies. Its default **5-second reply
+wait** is a client timeout; it never resets the backend's game state.
+Auto-play writes real results/events and stops on an error; use it when the
+stations are available. Use `gameClient/` for this protocol; `mqtt-test/` is legacy.
+
+Backend setup, team registration, database tables, and Grafana queries:
+**[Backend operations guide](docs/backend.md)**.

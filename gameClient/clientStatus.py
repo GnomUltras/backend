@@ -18,15 +18,17 @@ RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5"))
 
 def request_status(station_id):
     topic = f"station/{station_id}/status"
+    error_topic = f"station/{station_id}/error"
     finished = Event()
     response = None
+    acknowledgement = None
 
     def on_connect(client, userdata, flags, reason_code, properties):
         if reason_code != 0:
             print(f"[ERROR] Connection failed: {reason_code}", flush=True)
             finished.set()
             return
-        client.subscribe(topic, qos=1)
+        client.subscribe([(topic, 1), (error_topic, 1)])
 
     def on_subscribe(client, userdata, mid, reason_codes, properties):
         if any(code.is_failure for code in reason_codes):
@@ -42,21 +44,31 @@ def request_status(station_id):
         print(f"[QUERY] Sent {payload} to {topic}", flush=True)
 
     def on_message(client, userdata, msg):
-        nonlocal response
-        if msg.topic != topic or msg.retain:
+        nonlocal response, acknowledgement
+        if msg.retain:
             return
         try:
-            status = json.loads(msg.payload.decode("utf-8"))
+            payload = json.loads(msg.payload.decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return
-        # Ignore the echoed GET request and accept only JSON status replies.
-        if not isinstance(status, dict) or "team_id" not in status:
+        if not isinstance(payload, dict):
             return
-        if status.get("status") not in ("idle", "login", "start", "complete", "review", "error"):
-            return
-        response = status
-        print(f"[STATUS] Received from {msg.topic}: {json.dumps(status)}", flush=True)
-        finished.set()
+        if msg.topic == error_topic and payload.get("action") == "status":
+            if payload.get("return") not in ("OK", "ERROR"):
+                return
+            acknowledgement = payload
+            if payload["return"] == "ERROR":
+                print(f"[ERROR] {json.dumps(payload)}", flush=True)
+                finished.set()
+                return
+        elif msg.topic == topic and "team_id" in payload:
+            if payload.get("status") not in ("idle", "logged_in", "running", "reviewing"):
+                return
+            response = payload
+            print(f"[STATUS] {json.dumps(payload)}", flush=True)
+        if (response is not None and acknowledgement is not None and acknowledgement["return"] == "OK"
+                and "team_id" in acknowledgement and acknowledgement["team_id"] == response["team_id"]):
+            finished.set()
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.username_pw_set(station_id, MQTT_PASSWORD)
@@ -68,10 +80,13 @@ def request_status(station_id):
         client.connect(MQTT_HOST, MQTT_PORT, 60)
         client.loop_start()
         if not finished.wait(RESPONSE_TIMEOUT):
-            print(f"[TIMEOUT] No status reply within {RESPONSE_TIMEOUT:g} seconds.", flush=True)
+            print(f"[TIMEOUT] Missing status or OK within {RESPONSE_TIMEOUT:g} seconds.", flush=True)
+            return None
     finally:
         client.disconnect()
         client.loop_stop()
+    if acknowledgement is not None and acknowledgement["return"] == "ERROR":
+        return acknowledgement
     return response
 
 

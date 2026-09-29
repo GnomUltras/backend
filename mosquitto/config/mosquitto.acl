@@ -6,6 +6,7 @@ topic read station/+/complete
 topic read station/+/review
 # Send the next destination to the station that submitted the review.
 topic write station/+/nextStation
+topic write station/+/error
 topic readwrite station/+/status
 topic readwrite station/+/servertime
 topic readwrite station/+/test
@@ -17,6 +18,7 @@ pattern write station/%u/start
 pattern write station/%u/complete
 pattern write station/%u/review
 pattern read station/%u/nextStation
+pattern read station/%u/error
 
 # Status queries and replies share the same topic.
 pattern readwrite station/%u/status

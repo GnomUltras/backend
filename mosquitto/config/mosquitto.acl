@@ -12,7 +12,7 @@ topic readwrite station/+/servertime
 topic readwrite station/+/test
 
 
-# Each station uses its MQTT username (station01 to station05) in the topic.
+# Each station uses its MQTT username (station_2 to station_6) in the topic.
 pattern write station/%u/login
 pattern write station/%u/start
 pattern write station/%u/complete

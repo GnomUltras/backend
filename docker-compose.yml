@@ -83,7 +83,6 @@ services:
       DB_NAME: ${POSTGRES_DB:-stations}
       DB_USER: ${POSTGRES_USER:-stationuser}
       DB_PASSWORD: ${POSTGRES_PASSWORD:-changeme}
-      STATION_COUNT: ${STATION_COUNT:-5}
     networks:
       - stack
 

@@ -1,7 +1,7 @@
 # Station MQTT guide
 
 **Send an action → wait for its status and OK → continue.** The backend owns the
-station state. All examples use `station01`; replace it with your assigned ID.
+station state. All examples use `station_2`; replace it with your assigned ID.
 
 [Connect](#1-connect) · [Send / receive](#2-what-to-send-and-receive) ·
 [Full visit](#3-one-complete-visit) · [Next station](#4-automatic-next-station) ·
@@ -10,13 +10,53 @@ station state. All examples use `station01`; replace it with your assigned ID.
 
 ## 1. Connect
 
+### Stations
+
+Use the station ID as the MQTT username and in `station/<station_id>/<topic>`.
+The game name is the display name stored in the database.
+The backend reads station IDs, names, and `routing_order` from the `station` table;
+migration `0007` seeds the five entries below. There is no station list in `config.py`.
+
+| Station ID / MQTT username | Game | Topic prefix |
+| --- | --- | --- |
+| `station_2` | Morse | `station/station_2/` |
+| `station_3` | SQL | `station/station_3/` |
+| `station_4` | Password | `station/station_4/` |
+| `station_5` | JavaHOH | `station/station_5/` |
+| `station_6` | Quiz | `station/station_6/` |
+
+### IP addresses and setup status
+
+Only the SQL and Quiz Pis below are confirmed to have static IPs configured.
+Other station addresses are planned assignments; their setup is still unconfirmed.
+
+| IP address | Station / service | Device | Hostname | Static IP setup |
+| --- | --- | --- | --- | --- |
+| `192.168.1.11` | MQTT broker | Server | `MQTT-GNOM` | Server address provided; static setup unconfirmed |
+| `192.168.1.21` | `station_2` — Morse | ESP | Unknown | Unconfirmed |
+| `192.168.1.22` | `station_2` — Morse | Pi | Unknown | Unconfirmed |
+| `192.168.1.31` | `station_3` — SQL | ESP | Unknown | Unconfirmed |
+| `192.168.1.32` | `station_3` — SQL | Pi | `Station-3-SQL` | Configured |
+| `192.168.1.41` | `station_4` — Password | ESP | Unknown | Unconfirmed |
+| `192.168.1.42` | `station_4` — Password | Pi | Unknown | Unconfirmed |
+| `192.168.1.51` | `station_5` — JavaHOH | ESP | Unknown | Unconfirmed |
+| `192.168.1.52` | `station_5` — JavaHOH | Pi | Unknown | Unconfirmed |
+| `192.168.1.61` | `station_6` — Quiz | ESP | Unknown | Unconfirmed |
+| `192.168.1.62` | `station_6` — Quiz | Pi | `station-6-quiz` | Configured |
+
+ESP and Pi at the same station share the station's MQTT username, but must use
+different client IDs, e.g. `station_3-esp` and `station_3-pi`.
+Device hostnames and game names are not MQTT usernames.
+
+### Broker settings
+
 | Setting | Value |
 | --- | --- |
 | Broker | `192.168.1.11:1883` on the project LAN; `localhost:1883` for local Docker |
 | Protocol | MQTT 3.1.1 over TCP, without TLS |
-| Username | Your station ID: `station01` … `station05` |
+| Username | Your station ID: `station_2` … `station_6` |
 | Password | `testen123` in the supplied broker image |
-| Client ID | Unique per connection, e.g. `station01-game` |
+| Client ID | Unique per connection, e.g. `station_2-game` |
 | QoS / retain | QoS **1**, **`retain=false`** for requests and replies |
 | Format | UTF-8 JSON; topic names and JSON fields are case-sensitive |
 
@@ -24,19 +64,19 @@ Subscribe to these **three topics**, wait for subscription confirmation (SUBACK)
 then send requests:
 
 ```text
-station/station01/status
-station/station01/error
-station/station01/nextStation
+station/station_2/status
+station/station_2/error
+station/station_2/nextStation
 ```
 
-Your username grants access only to your station's topics. Use `station01`
-exactly, not `station1` or `station-01`. A station Pi uses the server's LAN address;
+Your username grants access only to your station's topics. Use `station_2`
+exactly, including the underscore. A station Pi uses the server's LAN address;
 `localhost` would connect to the station Pi itself.
 
 ## 2. What to send and receive
 
 **Topic format:** `station/<station_id>/<topic>`.
-Below, `/login` means the full topic **`station/station01/login`**, and likewise
+Below, `/login` means the full topic **`station/station_2/login`**, and likewise
 for every other suffix.
 
 ### Station → backend
@@ -66,7 +106,7 @@ registered spelling. The station ID comes from the topic, not the JSON.
 | `/status` | Review handoff finished, or query of a free station | `{"status":"idle","team_id":null}` |
 | `/error` | Request succeeded — **this topic also carries OK** | `{"return":"OK","action":"login","team_id":"Team-01"}` |
 | `/error` | Request failed | `{"return":"ERROR","action":"review","team_id":"Team-01","error_code":"INVALID_REVIEW_SCORE","message":"Review score must be 0, 1, or 2."}` |
-| `/nextStation` | Automatically after a saved review | `{"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}` |
+| `/nextStation` | Automatically after a saved review | `{"next_station":"station_3","team_id":"Team-01","round":1,"routing_status":"available"}` |
 
 `status` is always `idle`, `logged_in`, `running`, or `reviewing`.
 `action` identifies the request: `login`, `start`, `complete`, `review`, or `status`.
@@ -109,7 +149,7 @@ Wrong-order actions, another login, and actions from another team are rejected.
 
 ```mermaid
 sequenceDiagram
-    participant S as Station station01
+    participant S as Station station_2
     participant B as Backend via MQTT
     S->>B: /login {"uuid":"AA BB CC 01"}
     Note right of B: Resolve chip to Team-01, validate, save
@@ -125,7 +165,7 @@ sequenceDiagram
     B-->>S: /error OK + action complete + Team-01
     S->>B: /review {"team_id":"Team-01","score":2}
     Note right of B: Save rating, then perform handoff
-    B-->>S: /nextStation {"next_station":"station02","team_id":"Team-01","round":1,"routing_status":"available"}
+    B-->>S: /nextStation {"next_station":"station_3","team_id":"Team-01","round":1,"routing_status":"available"}
     Note right of B: After broker ACK, save idle and clear team
     B-->>S: /status {"status":"idle","team_id":null}
     B-->>S: /error {"return":"OK","action":"review","team_id":"Team-01"}
@@ -139,7 +179,7 @@ login starts a new round.
 ## 4. Automatic next station
 
 **`nextStation` is a message, not a state or a request.** It is sent to the
-**current station's** topic, e.g. `station/station01/nextStation`. The payload
+**current station's** topic, e.g. `station/station_2/nextStation`. The payload
 names the destination or reports that the round is complete. It does not log
 the team into the destination or reserve it.
 
@@ -149,7 +189,7 @@ Subscribe to your own `/nextStation` topic before submitting the review. The
 backend sends a **JSON object**, with QoS 1 and `retain=false`:
 
 ```json
-{"next_station":"station04","team_id":"Team-01","round":1,"routing_status":"available"}
+{"next_station":"station_5","team_id":"Team-01","round":1,"routing_status":"available"}
 ```
 
 | Field | Type | How to use it |
@@ -173,7 +213,7 @@ flowchart LR
 
 | Question | Current behavior |
 | --- | --- |
-| How is the destination chosen? | First free, unfinished station after the current number, wrapping 05 → 01. Completed stations in this team's round are skipped. |
+| How is the destination chosen? | First free, unfinished station after the current number, wrapping station_6 → station_2. Completed stations in this team's round are skipped. |
 | All remaining stations busy? | Send the team to the next unfinished, occupied station in that order, marked `queued`. Wait there until it becomes idle. |
 | All five reviews done? | `next_station: null`, `routing_status: "round_complete"`. Show that the round is finished. A later login starts a new round. |
 | Is the destination guaranteed free on arrival? | No reservation is made. `available` means idle when checked; another team may arrive first. Login still checks availability. |
@@ -201,9 +241,9 @@ one; it does not simply send the team to the next station number.
 
 | Situation after review | Routing reply |
 | --- | --- |
-| Leaving station01; station02 is busy, station03 was already completed, station04 and station05 are free and unfinished | `available`, `next_station: "station04"` |
-| Leaving station04; station05 was completed, station01 is busy, station02 is free and unfinished | `available`, `next_station: "station02"` (wrap around) |
-| Leaving station01; only station02 and station04 are unfinished, and both are busy | `queued`, `next_station: "station02"` |
+| Leaving station_2; station_3 is busy, station_4 was already completed, station_5 and station_6 are free and unfinished | `available`, `next_station: "station_5"` |
+| Leaving station_5; station_6 was completed, station_2 is busy, station_3 is free and unfinished | `available`, `next_station: "station_3"` (wrap around) |
+| Leaving station_2; only station_3 and station_5 are unfinished, and both are busy | `queued`, `next_station: "station_3"` |
 | Every configured station has a completed game and a saved review | `round_complete`, `next_station: null` |
 | All games were completed, but a review at another station is still missing | `no_available_station`, `next_station: null` (completed stations cannot be played again) |
 
@@ -214,7 +254,7 @@ For example, a finished round produces:
 ```
 
 Show a completion message and finish collecting the idle status and review OK.
-Do not automatically log the team into station01: a later chip scan starts its
+Do not automatically log the team into station_2: a later chip scan starts its
 next round. For `no_available_station`, finish the same handoff and ask the backend
 group to check missing reviews or station records. A status GET does not request
 another routing decision.

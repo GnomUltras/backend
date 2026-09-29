@@ -16,10 +16,11 @@ flowchart LR
     G -->|HTTP 3000| U[Browser]
 ```
 
-| Device | Project LAN address |
-| --- | --- |
-| Backend / MQTT broker | `192.168.1.11` |
-| Station 01 / 02 / 03 / 04 / 05 | `192.168.1.21` / `.22` / `.23` / `.24` / `.25` |
+The MQTT server is `MQTT-GNOM` at `192.168.1.11`. Stations use IDs and MQTT
+usernames `station_2` (Morse), `station_3` (SQL), `station_4` (Password),
+`station_5` (JavaHOH), and `station_6` (Quiz). See the
+[station and IP setup tables](../README.md#ip-addresses-and-setup-status) for all
+ESP/Pi addresses and which static IPs are confirmed.
 
 ## Database schema
 
@@ -64,10 +65,10 @@ for the new station states.
 | Table | Purpose |
 | --- | --- |
 | `team` | Unique, non-null primary key `id` for the scanned chip (e.g. `AA BB CC 01`) and unique, non-null `name` (e.g. `Team-01`). |
-| `station` | String primary key `station_id` such as `station01`, plus its name. |
+| `station` | String primary key `station_id` such as `station_2`, game `name`, and positive integer `routing_order`. |
 | `station_state` | One current-state row per station: `status`, `team_id`, `round`, `review_score`, and `updated_at`. Idle stations have no team or round. |
 | `results` | One result per team/round/station: `started_at`, `completed_at`, review, and result status. Earlier rounds remain available. |
-| `station_events` | Event history for Grafana: timestamp, station username (e.g. `station01`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
+| `station_events` | Event history for Grafana: timestamp, station username (e.g. `station_2`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
 
 ### Table relationships
 
@@ -87,8 +88,9 @@ erDiagram
         varchar name UK "Team-01"
     }
     station {
-        varchar station_id PK "station01"
+        varchar station_id PK "station_2"
         varchar name
+        int routing_order
     }
     station_state {
         varchar station_id PK, FK
@@ -199,7 +201,7 @@ sequenceDiagram
 
 `station_state` is the live snapshot: **what is happening at this station now?**
 Its single row for a station is updated as that station moves through the game.
-For example, station01 can show `status = running` and `team_id = Team-01`.
+For example, station_2 can show `status = running` and `team_id = Team-01`.
 After the next-station handoff, that same row becomes `idle`, with no team
 or review score, and with `round = NULL`. It does not keep previous visits.
 
@@ -222,7 +224,7 @@ so a rejected or failed login cannot advance the round. Restarting the controlle
 preserves this history. One team's new round does not advance another team's round.
 
 For example, Team-01's first five visits generate round-1 events. After the final
-review, the next login at station01 generates a round-2 event and a separate
+review, the next login at station_2 generates a round-2 event and a separate
 round-2 result. All subsequent transitions for that visit use round 2. An old
 handoff acknowledgement still logs `idle` under its original visit's round, even
 if the team has already started its next round at another station.
@@ -261,10 +263,11 @@ a read-only `REPEATABLE READ` transaction. It first checks the team name, then
 joins `station` to `station_state` and to this team's `results` for the saved round.
 No migration or in-memory game-state cache is needed for routing.
 
-The configured station list is `station01` through `STATION_COUNT`, rather than
-every row in the database. The source station is excluded from destinations.
-For example, leaving station03 with five stations gives the search order
-`station04 → station05 → station01 → station02`.
+The station list comes from the database `station` table, ordered by
+`routing_order` and then `station_id` for ties (initially `station_2` through `station_6`).
+Every catalog row belongs to the game. The source station is excluded from destinations.
+For example, leaving station_4 with five stations gives the search order
+`station_5 → station_6 → station_2 → station_3`.
 
 | Classification | Exact rule |
 | --- | --- |
@@ -296,8 +299,8 @@ flowchart TD
     P --> I[After broker ACK, commit idle and send review OK]
 ```
 
-Circular order starts after the source station and wraps from station05 to
-station01. A result with `completed_at` set or status `complete`/`review` is
+Circular order starts after the source station and wraps from station_6 to
+station_2. A result with `completed_at` set or status `complete`/`review` is
 excluded, matching the login replay checks. Round completion requires every
 configured station to have a completed, reviewed result. Earlier rounds do not
 block destinations in a later round.
@@ -380,8 +383,9 @@ A subsequent controller reconnect retries reviews still pending in the database.
 There is no stage timeout. Broker acknowledgement does not prove station receipt;
 once idle is committed, the destination is not replayed by a status query.
 
-At startup, the controller adds station names from `STATION_COUNT` and missing
-idle state rows. Existing occupied states, results, and database-managed team
+At startup, the controller creates missing idle state rows for the stations already
+in the database. It does not insert stations or overwrite their names or routing order.
+Existing occupied states, results, and database-managed team
 mappings are preserved. Old event history is not used to guess
 state for a database that predates the state table. Existing team names must be
 unique before applying this migration.
@@ -389,6 +393,27 @@ Existing result timestamps must also satisfy the timing rule before applying
 `0003_result_timing`; inconsistent records are not silently rewritten.
 
 Apply migrations before starting the updated controller (PostgreSQL must be running):
+
+`0007_station_names` maps the old station IDs in order: `station01` → `station_2`,
+`station02` → `station_3`, `station03` → `station_4`, `station04` → `station_5`,
+and `station05` → `station_6`. Results, active assignments, rounds, scores, and
+event history move with each station. Fresh databases receive the five stations
+and their game names, with `routing_order` values 1–5 in that order.
+The database is the only controller station catalog: validation, routing, and round
+completion read its rows. Change `station.name` or `station.routing_order` in SQL;
+no controller configuration change is needed. New stations also need a state row
+(created on controller startup) and their own broker account. Make catalog changes
+between game rounds, since adding a station changes what counts as a full round.
+If both an old and its replacement ID already exist, the
+migration stops without merging their data; resolve that mapping first.
+
+Stop the controller for the migration, then rebuild the broker and controller.
+Station devices must switch their usernames and topics to the new IDs at the
+same time. Passwords stay `testen123`; `STATION_COUNT` no longer configures routing.
+
+If the previous version of `0007` was already applied, editing its file will not
+rerun it. That database needs a follow-up migration adding and populating
+`station.routing_order` before running this controller version.
 
 ```sh
 docker compose stop game-controller

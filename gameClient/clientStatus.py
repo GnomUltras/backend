@@ -12,7 +12,7 @@ MQTT_HOST = "localhost"
 # MQTT_HOST = "192.168.1.11"
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "testen123")
-STATION_ID = os.getenv("STATION_ID", "station01")
+STATION_ID = os.getenv("STATION_ID", "station_2")
 RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5"))
 
 

@@ -53,14 +53,14 @@ class StationAlreadyCompletedError(RequestRejectedError):
         super().__init__("STATION_ALREADY_COMPLETED", message)
 
 
-def configured_station_ids():
-    """Build the station names used in MQTT topics and database rows."""
-    return [f"station{number:02d}" for number in range(1, config.STATION_COUNT + 1)]
+def configured_station_ids(cur=None):
+    """Read the database station catalog in routing order."""
+    return db.get_station_ids(cur)
 
 
 def init_game():
     """Initialize stations without resetting progress or changing database-managed teams."""
-    return db.init_db(configured_station_ids())
+    return db.init_db()
 
 
 def change_station_state(station_id, team_id, action, review_score=None, expected_updated_at=None):
@@ -97,7 +97,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
             round_number = db.get_latest_round(cur, team_id)
             reviewed_stations = db.get_reviewed_stations(cur, team_id, round_number)
             # Reusing a chip starts a new round only after every station's review.
-            if set(configured_station_ids()).issubset(reviewed_stations):
+            if set(configured_station_ids(cur)).issubset(reviewed_stations):
                 round_number += 1
             previous_result = db.get_result(cur, team_id, station_id, round_number)
             if previous_result is not None and (
@@ -186,10 +186,12 @@ def send_error(client, station_id, team_id, action, error_code, message=None):
 
 def choose_next_station(station_id, team_id, round_number):
     """Prefer a free unfinished station; otherwise suggest one where the team can queue."""
-    stations = configured_station_ids()
-    rows = db.get_routing_snapshot(team_id, round_number, stations)
+    rows = db.get_routing_snapshot(team_id, round_number)
     if rows is None:
         raise RequestRejectedError("UNKNOWN_TEAM")
+    stations = [row["station_id"] for row in rows]
+    if station_id not in stations:
+        raise RequestRejectedError("STATION_UNAVAILABLE")
     completed = {
         row["station_id"] for row in rows
         if row["completed_at"] is not None or row["result_status"] in ("complete", "review")
@@ -304,7 +306,13 @@ def on_message(client, userdata, msg):
     if msg.retain:
         send_error(client, station_id, None, action, "RETAINED_REQUEST")
         return
-    if station_id not in configured_station_ids():
+    try:
+        stations = configured_station_ids()
+    except DatabaseError as exc:
+        print(f"[DB ERROR] Could not read stations: {exc}", flush=True)
+        send_error(client, station_id, None, action, "DATABASE_ERROR")
+        return
+    if station_id not in stations:
         send_error(client, station_id, None, action, "STATION_UNAVAILABLE")
         return
     if action == "status" and request != {"request": "GET"}:

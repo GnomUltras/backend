@@ -25,7 +25,6 @@ DB_CONFIG = {
     "connect_timeout": int(os.getenv("DB_CONNECT_TIMEOUT", "5")),
 }
 
-# Creates station IDs from station01 up to this count, also used for nextStation routing.
-STATION_COUNT = int(os.getenv("STATION_COUNT", "5"))
+# Station IDs, game names, and routing order are managed in PostgreSQL's station table.
 
 # Team IDs and scanned identifiers are managed in PostgreSQL's team table.

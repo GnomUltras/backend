@@ -14,8 +14,9 @@ MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "testen123")
 RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5"))
 
-STATION_COUNT = 5
-START_STATION = "station01"
+STATION_IDS = ("station_2", "station_3", "station_4", "station_5", "station_6")
+STATION_COUNT = len(STATION_IDS)
+START_STATION = "station_2"
 # Leave at zero to generate database data quickly; increase for realistic play times.
 PLAY_SECONDS = 0
 STATION_WAIT_TIMEOUT = 30
@@ -71,7 +72,7 @@ def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
 
 def play_team(team_id, nfc_uuid, review_score):
     """Visit each station once, following the controller's nextStation replies."""
-    stations = {f"station{number:02d}" for number in range(1, STATION_COUNT + 1)}
+    stations = set(STATION_IDS)
     station_id = START_STATION
     visited = set()
     print(f"\n[TEAM] Starting a full round for {team_id} ({nfc_uuid}).", flush=True)

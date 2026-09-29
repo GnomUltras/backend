@@ -9,8 +9,8 @@ import config
 STATE_COLUMNS = 'station_id, team_id, status, review_score, updated_at, "round"'
 
 
-def init_db(station_ids):
-    """Add missing stations and state rows after migrations, preserving progress."""
+def init_db():
+    """Add missing state rows for database-managed stations, preserving their catalog."""
     try:
         with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
             with conn, conn.cursor() as cur:
@@ -18,22 +18,26 @@ def init_db(station_ids):
                 cur.execute('SELECT "round" FROM station_state LIMIT 0')
                 cur.execute('SELECT "round" FROM station_events LIMIT 0')
                 cur.execute('SELECT id, name FROM team LIMIT 0')
-                for station_id in station_ids:
-                    cur.execute(
-                        "INSERT INTO station (station_id, name) VALUES (%s, %s) "
-                        "ON CONFLICT (station_id) DO UPDATE SET name = EXCLUDED.name",
-                        (station_id, station_id),
-                    )
-                    cur.execute(
-                        "INSERT INTO station_state (station_id) VALUES (%s) "
-                        "ON CONFLICT (station_id) DO NOTHING",
-                        (station_id,),
-                    )
+                cur.execute('SELECT station_id, name, routing_order FROM station LIMIT 0')
+                cur.execute(
+                    "INSERT INTO station_state (station_id) SELECT station_id FROM station "
+                    "ON CONFLICT (station_id) DO NOTHING"
+                )
         print("[DB] PostgreSQL ready. Existing station states preserved.", flush=True)
         return True
     except psycopg2.Error as exc:
         print(f"[DB ERROR] Initialization failed. Apply Alembic migrations first: {exc}", flush=True)
         return False
+
+
+def get_station_ids(cur=None):
+    """Read valid station IDs in routing order, optionally within a game transaction."""
+    if cur is None:
+        with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
+            with conn, conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                return get_station_ids(cursor)
+    cur.execute("SELECT station_id FROM station ORDER BY routing_order, station_id")
+    return [row["station_id"] for row in cur.fetchall()]
 
 
 def get_team_name(chip_id):
@@ -65,7 +69,7 @@ def get_station_states(status, station_ids):
             return cur.fetchall()
 
 
-def get_routing_snapshot(team_id, round_number, station_ids):
+def get_routing_snapshot(team_id, round_number):
     """Read station occupancy and this team's results from one database snapshot."""
     with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
         conn.set_session(isolation_level="REPEATABLE READ", readonly=True)
@@ -80,8 +84,8 @@ def get_routing_snapshot(team_id, round_number, station_ids):
                    LEFT JOIN station_state AS ss ON ss.station_id = s.station_id
                    LEFT JOIN results AS r ON r.station_id = s.station_id
                        AND r.team_id = %s AND r."round" = %s
-                   WHERE s.station_id = ANY(%s)""",
-                (team_id, round_number, station_ids),
+                   ORDER BY s.routing_order, s.station_id""",
+                (team_id, round_number),
             )
             return cur.fetchall()
 

@@ -1,8 +1,10 @@
-"""Generate timed game results, then leave three live station states for Grafana."""
+"""Play teams concurrently, then leave three live station states for Grafana."""
 
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
 import random
 import time
+from threading import Event, Lock
 
 import clientLogin
 import clientStatus
@@ -31,6 +33,11 @@ TEAMS = (
     ("Team-03", "2C A1 19 49", 2),
 )
 
+# Serialize simulated visitors to each station, not the entire game. This also
+# keeps MQTT replies unambiguous because the protocol has no request IDs.
+STATION_LOCKS = {station_id: Lock() for station_id in STATION_IDS}
+STOP = Event()
+
 
 def configure_clients():
     """Use this script's broker settings for both existing MQTT clients."""
@@ -45,6 +52,8 @@ def wait_for_idle(station_id):
     """Wait for a free station, including the release after a review handoff."""
     deadline = time.monotonic() + STATION_WAIT_TIMEOUT
     while True:
+        if STOP.is_set():
+            raise RuntimeError("Auto-play stopped.")
         status = clientStatus.request_status(station_id)
         if status is None:
             raise RuntimeError(f"No status reply from {station_id}.")
@@ -55,11 +64,13 @@ def wait_for_idle(station_id):
         remaining = deadline - time.monotonic()
         if remaining <= 0:
             raise RuntimeError(f"{station_id} did not become idle within {STATION_WAIT_TIMEOUT:g} seconds.")
-        time.sleep(min(POLL_SECONDS, remaining))
+        STOP.wait(min(POLL_SECONDS, remaining))
 
 
 def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
     """Stop on a rejected or missing reply rather than sending the next action."""
+    if STOP.is_set():
+        raise RuntimeError("Auto-play stopped.")
     response = clientLogin.send_request(station_id, nfc_uuid if action == "login" else team_id, action, review_score)
     if response is None:
         raise RuntimeError(f"{team_id} at {station_id}: no complete reply for {action}.")
@@ -72,10 +83,10 @@ def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
     return response
 
 
-def play_team(team_id, nfc_uuid, review_score):
+def play_team(team_id, nfc_uuid, review_score, start_station=None):
     """Visit each station once, following the controller's nextStation replies."""
     stations = set(STATION_IDS)
-    station_id = START_STATION
+    station_id = start_station or START_STATION
     visited = set()
     print(f"\n[TEAM] Starting a full round for {team_id} ({nfc_uuid}).", flush=True)
 
@@ -83,16 +94,18 @@ def play_team(team_id, nfc_uuid, review_score):
         if station_id not in stations or station_id in visited:
             raise RuntimeError(f"Invalid or repeated destination for {team_id}: {station_id!r}")
         print(f"[VISIT {len(visited) + 1}/{STATION_COUNT}] {team_id} at {station_id}", flush=True)
-        wait_for_idle(station_id)
-        send_action(station_id, team_id, nfc_uuid, "login")
-        send_action(station_id, team_id, nfc_uuid, "start")
-        simulate_play(station_id)
-        send_action(station_id, team_id, nfc_uuid, "complete")
-        review = send_action(station_id, team_id, nfc_uuid, "review", review_score)
+        # Hold only this station's lock, releasing it before moving elsewhere.
+        # Other teams continue playing at their own stations in parallel.
+        with STATION_LOCKS[station_id]:
+            wait_for_idle(station_id)
+            send_action(station_id, team_id, nfc_uuid, "login")
+            send_action(station_id, team_id, nfc_uuid, "start")
+            simulate_play(station_id)
+            send_action(station_id, team_id, nfc_uuid, "complete")
+            review = send_action(station_id, team_id, nfc_uuid, "review", review_score)
         destination = review.get("next_station")
 
-        # Receiving nextStation can precede the controller's database update to idle.
-        wait_for_idle(station_id)
+        # The action client already waited for idle, review OK, and the route.
         visited.add(station_id)
         if review.get("routing_status") == "round_complete":
             if len(visited) != len(stations) or destination is not None:
@@ -110,9 +123,10 @@ def play_team(team_id, nfc_uuid, review_score):
 
 def simulate_play(station_id):
     """Keep the game running for a random duration before completing it."""
-    seconds = random.randint(PLAY_SECONDS_MIN, PLAY_SECONDS_MAX)
-    print(f"[PLAY] {station_id}: playing for {seconds} seconds.", flush=True)
-    time.sleep(seconds)
+    seconds = random.uniform(PLAY_SECONDS_MIN, PLAY_SECONDS_MAX)
+    print(f"[PLAY] {station_id}: playing for {seconds:.2f} seconds.", flush=True)
+    if STOP.wait(seconds):
+        raise RuntimeError("Auto-play stopped.")
 
 
 def leave_live_states():
@@ -133,13 +147,23 @@ def leave_live_states():
 
 def main():
     configure_clients()
+    STOP.clear()
     try:
         if STATION_COUNT < 3 or len(TEAMS) != 3:
             raise ValueError("The demo requires at least three stations and exactly three teams.")
-        if not 0 < PLAY_SECONDS_MIN <= PLAY_SECONDS_MAX:
-            raise ValueError("Play durations must be positive with MIN <= MAX.")
-        for team_id, nfc_uuid, review_score in TEAMS:
-            play_team(team_id, nfc_uuid, review_score)
+        if not 0 <= PLAY_SECONDS_MIN <= PLAY_SECONDS_MAX:
+            raise ValueError("Play durations must be non-negative with MIN <= MAX.")
+        first = STATION_IDS.index(START_STATION)
+        with ThreadPoolExecutor(max_workers=len(TEAMS)) as pool:
+            jobs = [pool.submit(play_team, *team, STATION_IDS[(first + i) % STATION_COUNT])
+                    for i, team in enumerate(TEAMS)]
+            try:
+                for job in as_completed(jobs):
+                    job.result()
+            except BaseException:
+                # Wake sleeping/waiting teams before the executor joins them.
+                STOP.set()
+                raise
         # Reuse the first team's chip; the controller advances its round automatically.
         print(f"\n[EXTRA ROUND] Playing another full round with {TEAMS[0][0]}.", flush=True)
         play_team(*TEAMS[0])

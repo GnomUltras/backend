@@ -399,10 +399,10 @@ Run these on the PC/Pi hosting the Docker stack, from this repository (use
 
 ```sh
 # Unlock one station and discard only its current visit so the team can retry.
-python resetGame.py --station station_3
+python gameClient/resetGame.py --station station_3
 
 # Delete ALL game results/events and return every station to idle, starting round 1.
-python resetGame.py --all
+python gameClient/resetGame.py --all
 ```
 
 Both commands preserve team UIDs, station names/order, and Grafana configuration.

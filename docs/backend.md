@@ -482,6 +482,33 @@ Enable the dashboard refresh interval to show new events and current states.
 Do not time-filter the current-state panel: an occupied station must remain
 visible even when its last change happened outside the dashboard time range.
 
+## Manual reset and station unlock
+
+Run `python gameClient/resetGame.py --station station_3` on the Docker host to release a
+stuck station. Its assigned team is freed, and **only the active visit's result
+and events** (matching station, team, and round) are deleted, including a saved
+completion/review. This permits retrying the station in the same round. Previous
+rounds and other stations' data are preserved. An already-idle station keeps its
+history; a missing state row is recreated. Unknown station IDs fail without edits.
+
+Run `python gameClient/resetGame.py --all` to delete **all results and events**, reset event
+numbering, and recreate idle states from the station catalog. Every team starts
+again at round 1. Team registrations, station catalog/routing order, schema,
+and Grafana settings stay intact; this is a game reset, not a database-volume deletion.
+
+Pause station clients and auto-play before running either command. The script
+operates on this repository's local Compose stack, stops `game-controller`, and
+uses the `backend` container's database settings/packages. It bypasses migrations,
+so use it after the stack has been initialized. It then starts Mosquitto if needed
+and starts the controller, clearing pending handoffs and restarting both helper
+services. Other stations' saved review handoffs resume on reconnect as usual.
+Externally started controller processes must also be stopped manually.
+
+Database changes are transactional. On failure the script exits nonzero and may
+leave the controller stopped; fix the reported problem before restarting it.
+The operation sends no fabricated action replies or routing messages. Station
+clients should query their current `/status` before continuing.
+
 ## Grafana setup
 
 Open `http://localhost:3000` on the backend host, or `http://192.168.1.11:3000`

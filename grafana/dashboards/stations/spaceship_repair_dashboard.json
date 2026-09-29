@@ -28,149 +28,43 @@
       },
       "fieldConfig": {
         "defaults": {
-          "custom": {
-            "align": "left",
-            "cellOptions": {
-              "type": "auto"
-            },
-            "footer": {
-              "reducers": []
-            },
-            "inspect": false
-          },
-          "mappings": [],
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {
-                "color": "green",
-                "value": 0
-              },
-              {
-                "color": "red",
-                "value": 80
-              }
-            ]
-          }
-        },
-        "overrides": [
-          {
-            "matcher": {
-              "id": "byName",
-              "options": "Status"
-            },
-            "properties": [
-              {
-                "id": "mappings",
-                "value": [
-                  {
-                    "options": {
-                      "free": {
-                        "color": "#3fd18a",
-                        "index": 0,
-                        "text": "● free"
-                      },
-                      "occupied": {
-                        "color": "#ff5d5d",
-                        "index": 1,
-                        "text": "● occupied"
-                      },
-                      "pending": {
-                        "color": "#ffc44d",
-                        "index": 2,
-                        "text": "● pending"
-                      }
-                    },
-                    "type": "value"
-                  }
-                ]
-              },
-              {
-                "id": "custom.cellOptions",
-                "value": {
-                  "type": "color-text"
-                }
-              }
-            ]
-          }
-        ]
-      },
-      "gridPos": {
-        "h": 8,
-        "w": 6,
-        "x": 0,
-        "y": 0
-      },
-      "id": 1,
-      "options": {
-        "cellHeight": "sm",
-        "showHeader": false
-      },
-      "pluginVersion": "12.2.0",
-      "targets": [
-        {
-          "datasource": {
-            "type": "grafana-postgresql-datasource",
-            "uid": "game-postgres"
-          },
-          "editorMode": "code",
-          "format": "table",
-          "rawQuery": true,
-          "rawSql": "WITH st AS (SELECT unnest(string_to_array('${station:csv}', ',')) AS station_id),\ncur AS (SELECT st.station_id, COALESCE((SELECT e.event_type FROM station_events e WHERE e.station_id = st.station_id ORDER BY e.created_at DESC, e.id DESC LIMIT 1),'free') AS status FROM st)\nSELECT station_id AS \"Station\", status AS \"Status\" FROM cur ORDER BY station_id",
-          "refId": "A",
-          "sql": {
-            "columns": [
-              {
-                "parameters": [],
-                "type": "function"
-              }
-            ],
-            "groupBy": [
-              {
-                "property": {
-                  "type": "string"
-                },
-                "type": "groupBy"
-              }
-            ],
-            "limit": 50
-          }
-        }
-      ],
-      "title": "Stations",
-      "type": "table"
-    },
-    {
-      "datasource": {
-        "type": "grafana-postgresql-datasource",
-        "uid": "game-postgres"
-      },
-      "fieldConfig": {
-        "defaults": {
           "color": {
             "fixedColor": "#d7e3f4",
             "mode": "fixed"
           },
           "mappings": [
             {
+              "type": "regex",
               "options": {
-                "free": {
+                "pattern": "^free.*",
+                "result": {
                   "color": "#3fd18a",
                   "index": 0,
-                  "text": "free"
-                },
-                "occupied": {
+                  "text": "$&"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^occupied.*",
+                "result": {
                   "color": "#ff5d5d",
                   "index": 1,
-                  "text": "occupied"
-                },
-                "pending": {
+                  "text": "$&"
+                }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^pending.*",
+                "result": {
                   "color": "#ffc44d",
                   "index": 2,
-                  "text": "pending"
+                  "text": "$&"
                 }
-              },
-              "type": "value"
+              }
             }
           ],
           "thresholds": {
@@ -186,9 +80,9 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 8,
-        "w": 18,
-        "x": 6,
+        "h": 4,
+        "w": 24,
+        "x": 0,
         "y": 0
       },
       "id": 5,
@@ -226,7 +120,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1),\nrev AS (\n  SELECT AVG(review_score) AS avg_score FROM station_events\n  WHERE station_id = '${station:raw}' AND review_score IS NOT NULL)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') AS \"Status\",\n  CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last) END AS \"Team\",\n  COALESCE((SELECT CASE WHEN avg_score >= 3.5 THEN '😄' WHEN avg_score >= 2.5 THEN '😐' ELSE '🙁' END || ' ' || ROUND(avg_score, 1) FROM rev), '–') AS \"Review\"",
+          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') || ' · ' || CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last)::text END AS \"Status\"",
           "refId": "A",
           "sql": {
             "columns": [
@@ -249,6 +143,150 @@
       ],
       "title": "${station:text}",
       "type": "stat"
+    },
+    {
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "game-postgres"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "mappings": []
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Bad (0)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ff5d5d",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Medium (1)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#ffc44d",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Good (2)"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#3fd18a",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "No votes yet"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "fixedColor": "#5c6370",
+                  "mode": "fixed"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 4
+      },
+      "id": 9,
+      "options": {
+        "displayLabels": [
+          "percent"
+        ],
+        "legend": {
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true,
+          "values": [
+            "percent"
+          ]
+        },
+        "pieType": "pie",
+        "reduceOptions": {
+          "calcs": [
+            "lastNotNull"
+          ],
+          "fields": "/.*/",
+          "values": false
+        },
+        "tooltip": {
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.2.0",
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "game-postgres"
+          },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT\n  COUNT(*) FILTER (WHERE review_score = 0) AS \"Bad (0)\",\n  COUNT(*) FILTER (WHERE review_score = 1) AS \"Medium (1)\",\n  COUNT(*) FILTER (WHERE review_score = 2) AS \"Good (2)\",\n  CASE WHEN COUNT(*) FILTER (WHERE review_score IN (0,1,2)) = 0 THEN 1 ELSE 0 END AS \"No votes yet\"\nFROM station_events\nWHERE review_score IS NOT NULL AND station_id = '${station:raw}'",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
+        }
+      ],
+      "title": "Review – ${station:text}",
+      "type": "piechart",
+      "repeat": "station",
+      "repeatDirection": "h",
+      "maxPerRow": 6
     },
     {
       "datasource": {
@@ -297,7 +335,7 @@
         "h": 7,
         "w": 24,
         "x": 0,
-        "y": 8
+        "y": 12
       },
       "id": 8,
       "maxPerRow": 6,
@@ -385,7 +423,7 @@
         "h": 10,
         "w": 12,
         "x": 0,
-        "y": 15
+        "y": 19
       },
       "id": 6,
       "options": {
@@ -490,7 +528,7 @@
         "h": 10,
         "w": 12,
         "x": 12,
-        "y": 15
+        "y": 19
       },
       "id": 7,
       "options": {

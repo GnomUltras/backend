@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 4,
+  "id": 2,
   "links": [],
   "panels": [
     {
@@ -226,8 +226,25 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1),\nrev AS (\n  SELECT review_score FROM station_events WHERE station_id = '${station:raw}' AND review_score IS NOT NULL ORDER BY created_at DESC, id DESC LIMIT 1)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') AS \"Status\",\n  CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last) END AS \"Team\",\n  COALESCE((SELECT CASE WHEN review_score >= 4 THEN '😄' WHEN review_score = 3 THEN '😐' ELSE '🙁' END FROM rev), '–') AS \"Review\"",
-          "refId": "A"
+          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1),\nrev AS (\n  SELECT AVG(review_score) AS avg_score FROM station_events\n  WHERE station_id = '${station:raw}' AND review_score IS NOT NULL)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') AS \"Status\",\n  CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last) END AS \"Team\",\n  COALESCE((SELECT CASE WHEN avg_score >= 3.5 THEN '😄' WHEN avg_score >= 2.5 THEN '😐' ELSE '🙁' END || ' ' || ROUND(avg_score, 1) FROM rev), '–') AS \"Review\"",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "${station:text}",
@@ -306,8 +323,25 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH ev AS (\n  SELECT station_id, team_id, event_type, created_at,\n         LEAD(created_at) OVER (PARTITION BY station_id ORDER BY created_at, id) AS ended_at\n  FROM station_events),\nrep AS (\n  SELECT station_id, MIN(EXTRACT(EPOCH FROM (ended_at - created_at))) AS secs\n  FROM ev\n  WHERE event_type = 'occupied' AND ended_at IS NOT NULL AND team_id = '${team:raw}'\n  GROUP BY station_id)\nSELECT s.name AS \"Station\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
-          "refId": "A"
+          "rawSql": "WITH rep AS (\n  SELECT station_id,\n         MIN(EXTRACT(EPOCH FROM (completed_at - started_at))) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL\n    AND team_id = '${team:raw}'\n  GROUP BY station_id)\nSELECT s.name AS \"Station\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "${team:text}",
@@ -368,8 +402,25 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH ev AS (\n  SELECT station_id, team_id, event_type, created_at,\n         LEAD(created_at) OVER (PARTITION BY station_id ORDER BY created_at, id) AS ended_at\n  FROM station_events),\nrep AS (\n  SELECT station_id, team_id, EXTRACT(EPOCH FROM (ended_at - created_at)) AS secs\n  FROM ev WHERE event_type = 'occupied' AND ended_at IS NOT NULL)\nSELECT \"Station\",\"Team\",\"Time\" FROM (SELECT DISTINCT ON (station_id) station_id AS \"Station\", team_id AS \"Team\", lpad(floor(secs/60)::int::text,2,'0') || ':' || lpad((floor(secs)::int % 60)::text,2,'0') AS \"Time\" FROM rep ORDER BY station_id, secs) t ORDER BY \"Station\"",
-          "refId": "A"
+          "rawSql": "WITH rep AS (\n  SELECT station_id, team_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL)\nSELECT \"Station\",\"Team\",\"Time\" FROM (\n  SELECT DISTINCT ON (station_id)\n         station_id AS \"Station\",\n         team_id AS \"Team\",\n         lpad(floor(secs/60)::int::text,2,'0') || ':' || lpad((floor(secs)::int % 60)::text,2,'0') AS \"Time\"\n  FROM rep\n  ORDER BY station_id, secs) t\nORDER BY \"Station\"",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "Leader Board /Stations/ – fastest repair per station",
@@ -456,8 +507,25 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH ev AS (\n  SELECT station_id, team_id, event_type, created_at,\n         LEAD(created_at) OVER (PARTITION BY station_id ORDER BY created_at, id) AS ended_at\n  FROM station_events),\nrep AS (\n  SELECT station_id, team_id, EXTRACT(EPOCH FROM (ended_at - created_at)) AS secs\n  FROM ev WHERE event_type = 'occupied' AND ended_at IS NOT NULL)\nSELECT ROW_NUMBER() OVER (ORDER BY SUM(secs)) AS \"#\", team_id AS \"Team\", lpad(floor(SUM(secs)/60)::int::text,2,'0') || ':' || lpad((floor(SUM(secs))::int % 60)::text,2,'0') AS \"Total time\" FROM rep GROUP BY team_id ORDER BY 1",
-          "refId": "A"
+          "rawSql": "WITH rep AS (\n  SELECT station_id, team_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL)\nSELECT ROW_NUMBER() OVER (ORDER BY SUM(secs)) AS \"#\",\n       team_id AS \"Team\",\n       lpad(floor(SUM(secs)/60)::int::text,2,'0') || ':' || lpad((floor(SUM(secs))::int % 60)::text,2,'0') AS \"Total time\"\nFROM rep\nGROUP BY team_id\nORDER BY 1",
+          "refId": "A",
+          "sql": {
+            "columns": [
+              {
+                "parameters": [],
+                "type": "function"
+              }
+            ],
+            "groupBy": [
+              {
+                "property": {
+                  "type": "string"
+                },
+                "type": "groupBy"
+              }
+            ],
+            "limit": 50
+          }
         }
       ],
       "title": "Leader Board /Teams/ – total repair time",
@@ -528,5 +596,5 @@
   "timezone": "browser",
   "title": "Spaceship Repair Control",
   "uid": "stationview",
-  "version": 2
+  "version": 4
 }

@@ -173,8 +173,9 @@ sequenceDiagram
 
 Compact labels such as `running + Team-01` use the JSON shapes in the reply table.
 Every successful action is saved before its confirmation is sent. A team can
-complete each station once per round; after all five reviews, its next accepted
-login starts a new round.
+complete each station once per game. After the final review handoff, its live
+results are cleared and its final station becomes idle. The same NFC tag can then
+start again. Events and station highscores remain saved.
 
 ## 4. Automatic next station
 
@@ -196,7 +197,7 @@ backend sends a **JSON object**, with QoS 1 and `retain=false`:
 | --- | --- | --- |
 | `next_station` | String or `null` | Destination station ID. Check for `null` before displaying directions. |
 | `team_id` | String | Finishing team's name, as returned by login. Match it to the team being reviewed. |
-| `round` | Integer | The finishing visit's round, not the next round. |
+| `round` | Integer | Event-history number for the finishing game; live state and results have no round column. |
 | `routing_status` | String | Use the outcome table below to choose directions, a waiting notice, or a completion message. |
 
 ### Selection and handoff
@@ -228,7 +229,7 @@ flowchart LR
 | `round_complete` | `null` | All configured stations reviewed in this round |
 | `no_available_station` | `null` | No valid destination, e.g. missing station state or unfinished reviews elsewhere; contact the backend group |
 
-`round` identifies the finishing visit's round. Every routing outcome still ends
+`round` identifies the finishing game in event history. Every routing outcome still ends
 with idle status and review OK after broker acknowledgement. A null destination
 is a valid response, not a reason to resend the review. Routing can be recomputed
 on controller reconnect while a handoff is pending, so a retried suggestion may change.
@@ -360,7 +361,7 @@ python -m pip install "paho-mqtt>=2.0"
 | `python gameClient/clientLogin.py` | Send one login/start/complete/review; prompts for inputs |
 | `python gameClient/clientServertime.py` | Read server time |
 | `python gameClient/clientTest.py` | Send 1, wait for 2 |
-| `python gameClient/clientAutoPlay.py` | Run three teams and an extra Team-01 round, then leave three live station states for Grafana |
+| `python gameClient/clientAutoPlay.py` | Run three teams concurrently, then an extra Team-01 round and three live station states |
 
 Migration `0008_team_tag_uids` registers these physical tags on fresh databases
 and updates the existing teams when upgrading:
@@ -376,7 +377,13 @@ and updates the existing teams when upgrading:
 The action client waits for all required replies. Its default **5-second reply
 wait** is a client timeout; it never resets the backend's game state.
 Auto-play writes real results/events and stops on an error; use it when the
-stations are free. Each `start` → `complete` takes a random **2–10 seconds**.
+stations are free. The three teams play **concurrently**, starting at station_2,
+station_3, and station_4. They follow the backend's routing; a lock per station
+keeps simulated visitors from sending overlapping requests there. Run only one
+auto-play process and avoid controlling the same stations externally during it.
+Each `start` → `complete` takes a random **2–10 seconds** for realistic timing data.
+Adjust `PLAY_SECONDS_MIN` / `PLAY_SECONDS_MAX` at the top of the script.
+After all three teams finish, Team-01 plays its extra round.
 After the full rounds, it starts three new visits and leaves:
 
 | Station | Team | Final state |
@@ -398,14 +405,15 @@ Run these on the PC/Pi hosting the Docker stack, from this repository (use
 `python3` on the Pi). Pause auto-play and station requests first.
 
 ```sh
-# Unlock one station and discard only its current visit so the team can retry.
+# Unlock one station and remove its current result; preserve events/highscores.
 python gameClient/resetGame.py --station station_3
 
 # Delete ALL game results/events and return every station to idle, starting round 1.
 python gameClient/resetGame.py --all
 ```
 
-Both commands preserve team UIDs, station names/order, and Grafana configuration.
+Both commands preserve highscores, team UIDs, station names/order, and Grafana configuration.
+A single-station unlock also preserves events and adds a `reset` log entry.
 The script stops the controller, applies the database changes in one transaction,
 then starts the broker/controller and its helper services. Python packages run
 inside the backend container; no host-side pip installation is needed.

@@ -6,7 +6,7 @@ from psycopg2.extras import RealDictCursor
 import config
 
 
-STATE_COLUMNS = 'station_id, team_id, status, review_score, updated_at, "round"'
+STATE_COLUMNS = 'station_id, team_id, status, updated_at'
 
 
 def init_db():
@@ -14,8 +14,9 @@ def init_db():
     try:
         with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
             with conn, conn.cursor() as cur:
-                cur.execute('SELECT started_at, completed_at, "round" FROM results LIMIT 0')
-                cur.execute('SELECT "round" FROM station_state LIMIT 0')
+                cur.execute('SELECT started_at, completed_at FROM results LIMIT 0')
+                cur.execute('SELECT status FROM station_state LIMIT 0')
+                cur.execute('SELECT station_id, team_name, time FROM high_score LIMIT 0')
                 cur.execute('SELECT "round" FROM station_events LIMIT 0')
                 cur.execute('SELECT id, name FROM team LIMIT 0')
                 cur.execute('SELECT station_id, name, routing_order FROM station LIMIT 0')
@@ -69,7 +70,7 @@ def get_station_states(status, station_ids):
             return cur.fetchall()
 
 
-def get_routing_snapshot(team_id, round_number):
+def get_routing_snapshot(team_id):
     """Read station occupancy and this team's results from one database snapshot."""
     with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
         conn.set_session(isolation_level="REPEATABLE READ", readonly=True)
@@ -83,11 +84,12 @@ def get_routing_snapshot(team_id, round_number):
                    FROM station AS s
                    LEFT JOIN station_state AS ss ON ss.station_id = s.station_id
                    LEFT JOIN results AS r ON r.station_id = s.station_id
-                       AND r.team_id = %s AND r."round" = %s
+                       AND r.team_id = %s
                    ORDER BY s.routing_order, s.station_id""",
-                (team_id, round_number),
+                (team_id,),
             )
-            return cur.fetchall()
+            stations = cur.fetchall()
+            return {"stations": stations, "last_event": get_latest_team_event(cur, team_id)}
 
 
 @contextmanager
@@ -107,7 +109,7 @@ def station_transaction(station_id):
 
 
 def lock_team(cur, team_id):
-    """Serialize a team's transitions across stations, including round changes."""
+    """Serialize a team's transitions and final reset across stations."""
     cur.execute("SELECT 1 FROM team WHERE name = %s FOR UPDATE", (team_id,))
     return cur.fetchone() is not None
 
@@ -124,20 +126,38 @@ def get_team_station(cur, team_id):
     return row["station_id"] if row else None
 
 
-def get_latest_round(cur, team_id):
-    """Read the latest saved round, starting at 1 for a team with no results."""
-    cur.execute('SELECT COALESCE(MAX("round"), 1) AS "round" FROM results WHERE team_id = %s', (team_id,))
-    return cur.fetchone()["round"]
-
-
-def get_reviewed_stations(cur, team_id, round_number):
-    """Return the stations whose games and reviews are finished in this round."""
+def get_latest_team_event(cur, team_id):
+    """Read event-only game numbering; live tables have no round column."""
     cur.execute(
-        'SELECT station_id FROM results WHERE team_id = %s AND "round" = %s '
-        "AND status = 'review' AND completed_at IS NOT NULL",
-        (team_id, round_number),
+        'SELECT "round", event_type FROM station_events WHERE team_id = %s '
+        'ORDER BY "round" DESC, id DESC LIMIT 1', (team_id,),
+    )
+    return cur.fetchone()
+
+
+def get_reviewed_stations(cur, team_id):
+    """Read the team's reviewed stations in its current, resettable results."""
+    cur.execute(
+        "SELECT station_id FROM results WHERE team_id = %s "
+        "AND status = 'review' AND completed_at IS NOT NULL", (team_id,),
     )
     return {row["station_id"] for row in cur.fetchall()}
+
+
+def clear_team_results(cur, team_id):
+    """Restore an unplayed team: no result rows; event history is untouched."""
+    cur.execute("DELETE FROM results WHERE team_id = %s", (team_id,))
+
+
+def save_high_score(cur, station_id, team_id, duration):
+    """Atomically keep the fastest duration; an equal time keeps the first winner."""
+    cur.execute(
+        """INSERT INTO high_score (station_id, team_name, time) VALUES (%s, %s, %s)
+           ON CONFLICT (station_id) DO UPDATE SET
+               team_name = EXCLUDED.team_name, time = EXCLUDED.time
+           WHERE high_score.time IS NULL OR EXCLUDED.time < high_score.time""",
+        (station_id, team_id, duration),
+    )
 
 
 def get_timestamp(cur):
@@ -146,38 +166,42 @@ def get_timestamp(cur):
     return cur.fetchone()["now"]
 
 
-def get_result(cur, team_id, station_id, round_number):
-    """Read a team's progress at one station in the specified round."""
+def get_result(cur, team_id, station_id):
+    """Read a team's current progress at one station."""
+    if cur is None:
+        with closing(psycopg2.connect(**config.DB_CONFIG)) as conn:
+            with conn, conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                return get_result(cursor, team_id, station_id)
     cur.execute(
         "SELECT created_at, status, started_at, completed_at, review FROM results "
-        'WHERE team_id = %s AND station_id = %s AND "round" = %s',
-        (team_id, station_id, round_number),
+        "WHERE team_id = %s AND station_id = %s",
+        (team_id, station_id),
     )
     return cur.fetchone()
 
 
-def save_result(cur, team_id, station_id, round_number, result):
-    """Save this round's result without overwriting a previous group's visit."""
+def save_result(cur, team_id, station_id, result):
+    """Save the current visit, keyed by team name and station."""
     cur.execute(
         """INSERT INTO results
-               (team_id, station_id, "round", created_at, status, started_at, completed_at, review)
-           VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-           ON CONFLICT (team_id, "round", station_id) DO UPDATE SET
+               (team_id, station_id, created_at, status, started_at, completed_at, review)
+           VALUES (%s, %s, %s, %s, %s, %s, %s)
+           ON CONFLICT (team_id, station_id) DO UPDATE SET
                created_at = EXCLUDED.created_at, status = EXCLUDED.status,
                started_at = EXCLUDED.started_at, completed_at = EXCLUDED.completed_at,
                review = EXCLUDED.review""",
-        (team_id, station_id, round_number, result["created_at"], result["status"],
+        (team_id, station_id, result["created_at"], result["status"],
          result["started_at"], result["completed_at"], result["review"]),
     )
 
 
-def save_station_state(cur, station_id, team_id, status, review_score, timestamp, round_number):
+def save_station_state(cur, station_id, team_id, status, timestamp):
     """Update the station's current occupancy and return its new state."""
     cur.execute(
         f"""UPDATE station_state SET team_id = %s, status = %s,
-               review_score = %s, updated_at = %s, "round" = %s
+               updated_at = %s
                WHERE station_id = %s RETURNING {STATE_COLUMNS}""",
-        (team_id, status, review_score, timestamp, round_number, station_id),
+        (team_id, status, timestamp, station_id),
     )
     return cur.fetchone()
 

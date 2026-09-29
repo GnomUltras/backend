@@ -360,7 +360,7 @@ python -m pip install "paho-mqtt>=2.0"
 | `python gameClient/clientLogin.py` | Send one login/start/complete/review; prompts for inputs |
 | `python gameClient/clientServertime.py` | Read server time |
 | `python gameClient/clientTest.py` | Send 1, wait for 2 |
-| `python gameClient/clientAutoPlay.py` | Run three teams through five stations, then an extra round with Team-01 |
+| `python gameClient/clientAutoPlay.py` | Run three teams and an extra Team-01 round, then leave three live station states for Grafana |
 
 Migration `0008_team_tag_uids` registers these physical tags on fresh databases
 and updates the existing teams when upgrading:
@@ -376,7 +376,38 @@ and updates the existing teams when upgrading:
 The action client waits for all required replies. Its default **5-second reply
 wait** is a client timeout; it never resets the backend's game state.
 Auto-play writes real results/events and stops on an error; use it when the
-stations are available. Use `gameClient/` for this protocol; `mqtt-test/` is legacy.
+stations are free. Each `start` → `complete` takes a random **2–10 seconds**.
+After the full rounds, it starts three new visits and leaves:
+
+| Station | Team | Final state |
+| --- | --- | --- |
+| `station_2` — Morse | Team-01 | `logged_in` |
+| `station_3` — SQL | Team-02 | `running` |
+| `station_4` — Password | Team-03 | `reviewing` (no rating submitted) |
+
+These visits stay active after the script exits. Finish them using the action
+client before rerunning auto-play. The running visit keeps accumulating elapsed
+time until completed. Use `gameClient/` for this protocol.
 
 Backend setup, team registration, database tables, and Grafana queries:
 **[Backend operations guide](docs/backend.md)**.
+
+## 8. Reset or unlock a station
+
+Run these on the PC/Pi hosting the Docker stack, from this repository (use
+`python3` on the Pi). Pause auto-play and station requests first.
+
+```sh
+# Unlock one station and discard only its current visit so the team can retry.
+python resetGame.py --station station_3
+
+# Delete ALL game results/events and return every station to idle, starting round 1.
+python resetGame.py --all
+```
+
+Both commands preserve team UIDs, station names/order, and Grafana configuration.
+The script stops the controller, applies the database changes in one transaction,
+then starts the broker/controller and its helper services. Python packages run
+inside the backend container; no host-side pip installation is needed.
+Query `/status` before resuming station clients. See the
+[recovery details](docs/backend.md#manual-reset-and-station-unlock).

@@ -1,6 +1,7 @@
-"""Play a full round with three teams, then an extra round with the first team."""
+"""Generate timed game results, then leave three live station states for Grafana."""
 
 import os
+import random
 import time
 
 import clientLogin
@@ -17,8 +18,9 @@ RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5"))
 STATION_IDS = ("station_2", "station_3", "station_4", "station_5", "station_6")
 STATION_COUNT = len(STATION_IDS)
 START_STATION = "station_2"
-# Leave at zero to generate database data quickly; increase for realistic play times.
-PLAY_SECONDS = 0
+# Each finished game gets a random duration for the Grafana timing panels.
+PLAY_SECONDS_MIN = 2
+PLAY_SECONDS_MAX = 10
 STATION_WAIT_TIMEOUT = 30
 POLL_SECONDS = 0.5
 
@@ -84,7 +86,7 @@ def play_team(team_id, nfc_uuid, review_score):
         wait_for_idle(station_id)
         send_action(station_id, team_id, nfc_uuid, "login")
         send_action(station_id, team_id, nfc_uuid, "start")
-        time.sleep(PLAY_SECONDS)
+        simulate_play(station_id)
         send_action(station_id, team_id, nfc_uuid, "complete")
         review = send_action(station_id, team_id, nfc_uuid, "review", review_score)
         destination = review.get("next_station")
@@ -106,16 +108,42 @@ def play_team(team_id, nfc_uuid, review_score):
     print(f"[TEAM DONE] {team_id}: completed all {STATION_COUNT} stations.", flush=True)
 
 
+def simulate_play(station_id):
+    """Keep the game running for a random duration before completing it."""
+    seconds = random.randint(PLAY_SECONDS_MIN, PLAY_SECONDS_MAX)
+    print(f"[PLAY] {station_id}: playing for {seconds} seconds.", flush=True)
+    time.sleep(seconds)
+
+
+def leave_live_states():
+    """Start new visits with separate teams and stop at three different stages."""
+    for station_id, (team_id, nfc_uuid, _), status in zip(
+        STATION_IDS[:3], TEAMS, ("logged_in", "running", "reviewing")
+    ):
+        wait_for_idle(station_id)
+        send_action(station_id, team_id, nfc_uuid, "login")
+        if status in ("running", "reviewing"):
+            send_action(station_id, team_id, nfc_uuid, "start")
+        if status == "reviewing":
+            simulate_play(station_id)
+            send_action(station_id, team_id, nfc_uuid, "complete")
+        # Do not submit review: its handoff would automatically release the station.
+        print(f"[LIVE STATE] {station_id}: {status} with {team_id} (left occupied).", flush=True)
+
+
 def main():
     configure_clients()
     try:
-        if STATION_COUNT < 1 or PLAY_SECONDS < 0:
-            raise ValueError("STATION_COUNT must be positive and PLAY_SECONDS cannot be negative.")
+        if STATION_COUNT < 3 or len(TEAMS) != 3:
+            raise ValueError("The demo requires at least three stations and exactly three teams.")
+        if not 0 < PLAY_SECONDS_MIN <= PLAY_SECONDS_MAX:
+            raise ValueError("Play durations must be positive with MIN <= MAX.")
         for team_id, nfc_uuid, review_score in TEAMS:
             play_team(team_id, nfc_uuid, review_score)
         # Reuse the first team's chip; the controller advances its round automatically.
         print(f"\n[EXTRA ROUND] Playing another full round with {TEAMS[0][0]}.", flush=True)
         play_team(*TEAMS[0])
+        leave_live_states()
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[STOPPED] {exc}", flush=True)
         print("Check station status before rerunning; accepted actions remain saved.", flush=True)
@@ -124,6 +152,7 @@ def main():
         print("\n[STOPPED] Auto-play interrupted. Accepted actions remain saved.", flush=True)
         return 1
     print(f"\n[DONE] All {len(TEAMS)} teams completed a full round; {TEAMS[0][0]} completed an extra round.", flush=True)
+    print("Three stations remain occupied for Grafana. Finish those visits before running auto-play again.", flush=True)
     return 0
 
 

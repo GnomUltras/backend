@@ -629,7 +629,7 @@
         "multi": true,
         "name": "station",
         "options": [],
-        "query": "Station 1 : station_1, Station 2 : station_2, Station 3 : station_3, Station 4 : station_4, Station 5 : station_5, Station 6 : station_6",
+        "query": "JavaHOH : station_5, Passwort zurücksetzen : station_4, SQL : station_3, Morse : station_2, Quiz : station_6",
         "type": "custom"
       }
     ]

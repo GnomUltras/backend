@@ -20,8 +20,8 @@ import sqlalchemy as sa
 from alembic import op
 
 # revision identifiers, used by Alembic.
-revision = "0005_seed_dummy"
-down_revision = "0004_team_rounds"
+revision = "0007_seed_dummy"
+down_revision = "0006_team_identifiers"
 branch_labels = None
 depends_on = None
 

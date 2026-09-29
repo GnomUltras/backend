@@ -27,7 +27,7 @@ migration `0007` seeds the five entries below. There is no station list in `conf
 
 ### IP addresses and setup status
 
-Only the SQL and Quiz Pis below are confirmed to have static IPs configured.
+The SQL, Password, and Quiz Pis below are confirmed to have static IPs configured.
 Other station addresses are planned assignments; their setup is still unconfirmed.
 
 | IP address | Station / service | Device | Hostname | Static IP setup |
@@ -38,7 +38,7 @@ Other station addresses are planned assignments; their setup is still unconfirme
 | `192.168.1.31` | `station_3` — SQL | ESP | Unknown | Unconfirmed |
 | `192.168.1.32` | `station_3` — SQL | Pi | `Station-3-SQL` | Configured |
 | `192.168.1.41` | `station_4` — Password | ESP | Unknown | Unconfirmed |
-| `192.168.1.42` | `station_4` — Password | Pi | Unknown | Unconfirmed |
+| `192.168.1.42` | `station_4` — Password | Pi | `station-4-password` | Configured |
 | `192.168.1.51` | `station_5` — JavaHOH | ESP | Unknown | Unconfirmed |
 | `192.168.1.52` | `station_5` — JavaHOH | Pi | Unknown | Unconfirmed |
 | `192.168.1.61` | `station_6` — Quiz | ESP | Unknown | Unconfirmed |

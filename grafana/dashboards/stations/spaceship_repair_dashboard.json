@@ -597,7 +597,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT ROW_NUMBER() OVER (ORDER BY \"time\") AS \"#\",\n       team_name AS \"Team\",\n       round AS \"Round\",\n       lpad(floor(EXTRACT(EPOCH FROM \"time\")/60)::int::text, 2, '0') || ':' ||\n       lpad((floor(EXTRACT(EPOCH FROM \"time\"))::int % 60)::text, 2, '0') AS \"Total time\"\nFROM (\n  SELECT DISTINCT ON (team_name) team_name, \"time\", round\n  FROM high_score_team\n  WHERE \"time\" IS NOT NULL\n  ORDER BY team_name, \"time\" ASC\n) best\nORDER BY \"time\" ASC\nLIMIT 5",
+          "rawSql": "SELECT ROW_NUMBER() OVER (ORDER BY \"time\") AS \"#\",\n       team_name AS \"Team\",\n       round AS \"Round\",\n       lpad(floor(EXTRACT(EPOCH FROM \"time\")/60)::int::text, 2, '0') || ':' ||\n       lpad((floor(EXTRACT(EPOCH FROM \"time\"))::int % 60)::text, 2, '0') AS \"Total time\"\nFROM (\n  SELECT DISTINCT ON (team_name, round)\n    team_name,\n    \"time\",\n    round\n  FROM high_score_team\n  WHERE \"time\" IS NOT NULL\n  ORDER BY team_name, round, \"time\" ASC\n) best\nORDER BY \"time\" ASC\nLIMIT 5",
           "refId": "A",
           "sql": {
             "columns": [
@@ -618,7 +618,7 @@
           }
         }
       ],
-      "title": "Highscore",
+      "title": "Team-Highscore",
       "type": "table"
     }
   ],

@@ -9,9 +9,9 @@ depends_on = None
 def upgrade() -> None:
     op.create_table(
         "high_score_team",
-        sa.Column("team_name", sa.String(50)),
+        sa.Column("team_name", sa.String(50), primary_key=True),
         sa.Column("time", sa.Interval(), nullable=True),
-        sa.Column("round", sa.Integer()),
+        sa.Column("round", sa.Integer(), primary_key=True),
     )
 
 def downgrade() -> None:

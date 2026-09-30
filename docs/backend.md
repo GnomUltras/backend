@@ -39,16 +39,17 @@ directly, with no in-memory station-state cache. Revision `0003_result_timing`
 provides `started_at` and `completed_at`; the controller records these timestamps
 on accepted start and complete actions. Revision `0004_team_rounds` adds `round`
 to events, results, and occupied station state. Existing records become round 1;
-existing idle stations keep a null round. Apply this migration to an existing
-database without deleting its volume.
+existing idle stations keep a null round. Revision `0009_high_score` later removes
+rounds from the two live tables; `station_events.round` remains for history.
 Revision `0005_station_states` converts station states without deleting data:
 `login -> logged_in`, `start -> running`, and `complete/review -> reviewing`.
-Existing saved review scores distinguish pending handoffs from teams still
-entering a review. Downgrading this revision restores the old state names.
+At that revision, saved state scores distinguished pending handoffs. Revision
+`0010_remove_state_review` removes that field; the controller now checks
+`results.status = 'review'` to identify an accepted review. Downgrading this revision restores the old state names.
 Revision `0006_team_identifiers` uses `team.id` for the scanned chip ID and
 `team.name` for the unique team name. It converts existing game references to
 team names and seeds the five former config mappings once, without an extra column. Migrations `0001`
-through `0004` already on main remain unchanged.
+through `0008` already on main remain unchanged.
 `results.status` continues to record the latest accepted action (`login`, `start`,
 `complete`, `review`), as does `station_events.event_type`; these are not the
 station's live state.
@@ -56,8 +57,8 @@ Chip IDs (`team.id`) and station IDs are `VARCHAR(50)` strings. Unique team
 names (`team.name`) and game-table `team_id` columns are `VARCHAR(255)` strings;
 for example, `74 FA CB 01` maps to `Team-01`. `station_state` uses
 `team_id` for the assigned team. Only the event row counter (`station_events.id`)
-identifies an event. The new `round` column is a positive integer scoped to a team,
-not a globally shared round counter.
+identifies an event. Only `station_events` now stores a `round` column. It is a positive history
+number scoped to a team, not part of live station state or result keys.
 The older revisions originally targeted a fresh string-ID schema. Upgrade from
 the current main schema with `alembic upgrade head`; no volume reset is needed
 for the new station states.
@@ -66,14 +67,16 @@ for the new station states.
 | --- | --- |
 | `team` | Unique, non-null primary key `id` for the scanned chip (e.g. `74 FA CB 01`) and unique, non-null `name` (e.g. `Team-01`). |
 | `station` | String primary key `station_id` such as `station_2`, game `name`, and positive integer `routing_order`. |
-| `station_state` | One current-state row per station: `status`, `team_id`, `round`, `review_score`, and `updated_at`. Idle stations have no team or round. |
-| `results` | One result per team/round/station: `started_at`, `completed_at`, review, and result status. Earlier rounds remain available. |
+| `station_state` | One live row per station: `status`, `team_id`, and `updated_at`. Idle stations have no team. No round or review-score column. |
+| `results` | Current game only, keyed by `(team_id, station_id)`: start/completion times, review, and action. Kept until that team's next accepted login after finishing all stations. |
+| `high_score` | One row per station: winning `team_name` and fastest `time` as an `INTERVAL`; both null before any completion. Survives game resets. |
+| `high_score_team` | One row per `(team_name, round)` with total station playing time as an `INTERVAL`. Keeps completed games across resets and tag reuse. |
 | `station_events` | Event history for Grafana: timestamp, station username (e.g. `station_2`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
 
 ### Table relationships
 
 `team_id` references **`team.name`**, not the scanned chip ID. Each result belongs
-to one team, round, and station. Events are independent historical snapshots;
+to one team and station in the current game. Events are independent historical snapshots;
 their team/station fields have no foreign keys.
 
 ```mermaid
@@ -82,6 +85,7 @@ erDiagram
     team |o--o{ station_state : "name to assigned team_id"
     station ||--o{ results : "station_id"
     station ||--o| station_state : "station_id"
+    station ||--o| high_score : "station_id"
 
     team {
         varchar id PK "Scanned chip ID"
@@ -96,18 +100,25 @@ erDiagram
         varchar station_id PK, FK
         varchar team_id FK "Null when idle"
         varchar status "Current station state"
-        integer round "Null when idle"
-        smallint review_score "Saved review awaiting handoff"
         timestamp updated_at
     }
     results {
         varchar team_id PK, FK "Team name"
-        integer round PK
         varchar station_id PK, FK
         varchar status "Latest accepted action"
         timestamp started_at
         timestamp completed_at
         text review
+    }
+    high_score {
+        varchar station_id PK, FK
+        varchar team_name "Winning team name"
+        interval time "Fastest playing duration"
+    }
+    high_score_team {
+        varchar team_name PK "Historical game team ID"
+        integer round PK
+        interval time "Sum of station playing durations"
     }
     station_events {
         integer id PK
@@ -154,13 +165,15 @@ historical snapshots. Grafana joins game records to `team.name`, not the chip ID
 
 `station_state` accepts only `idle`, `logged_in`, `running`, and `reviewing`.
 An idle station has no team; every other state requires a known team name.
-Only `reviewing` may have a saved score (0, 1, or 2) while its handoff is pending.
+During `reviewing`, the current result is `complete` while waiting for a rating,
+and `review` once it is accepted. Review totals come from `station_events`;
+no score is stored in the live station row.
 No next-station destination is stored in this table. After a saved review, the
-controller selects a destination from current occupancy and that visit's saved round.
+controller selects a destination from current occupancy and that team's live results.
 State transitions and acknowledgement handling remain controller responsibilities.
 The controller locks the station and team rows, checks the action against the current
 state, and writes state, result, and event in one transaction. The team lock also
-serializes round decisions and login occupancy checks across stations. After acquiring
+serializes new-game resets and login occupancy checks across stations. After acquiring
 the team lock, login reads `station_state` for an existing assignment and returns
 `TEAM_BUSY` without writing anything if one exists. This includes `logged_in`,
 `running`, and `reviewing`, even after a score is saved while the handoff is pending.
@@ -203,52 +216,96 @@ sequenceDiagram
 
 ### Current state, results, and events
 
-`station_state` is the live snapshot: **what is happening at this station now?**
-Its single row for a station is updated as that station moves through the game.
-For example, station_2 can show `status = running` and `team_id = Team-01`.
-After the next-station handoff, that same row becomes `idle`, with no team
-or review score, and with `round = NULL`. It does not keep previous visits.
+| Data | While playing | After the team finishes all stations |
+| --- | --- | --- |
+| `station_state` | Current state and assigned team | Final station becomes `idle`; team becomes null. Other teams are untouched. |
+| `results` | One row per team/station; completed stations stay blocked against replay | All rows remain visible until this team's next accepted login. |
+| `station_events` | Append login/start/complete/review/idle and their timestamps/scores | Preserve every event; append `round_complete` for the finished game. |
+| `high_score` | On `complete`, keep the fastest start-to-complete duration per station | Preserve the winning name and duration. |
 
-`results` describes **how a particular team did at a particular station in one round**.
-`started_at` is set when `start` is accepted, and `completed_at` when `complete`
-is accepted. Both are timezone-aware timestamps. Login waiting time and review
-time are excluded. Before starting, both are null; during play, only `started_at`
-is filled. A completion requires a start and cannot precede it. No separate
-duration column is needed: duration is `completed_at - started_at`.
-The primary key is `(team_id, round, station_id)`. Before accepting
-login, the controller checks that round's result under the station and team locks.
-A result with `completed_at` set, or status `complete`/`review`, blocks another visit
-by the same team in that round. Only a missing or unfinished result can be initialized on login.
-Rejected repeat visits do not change any state, result, or event rows.
+The final broker acknowledgement releases the station and records game completion,
+but does not clear results. The reset runs **on the same team's next accepted login**,
+at any free station, after every configured station has been completed and reviewed.
+Only that team's results are deleted; its event history and highscores stay intact.
+Result deletion and the new login commit in one transaction. A busy station,
+pending handoff, invalid request, or failed write leaves the completed results intact.
+The team lock serializes competing logins, so only one starts the next game.
 
-The controller reads the team's latest round from its saved results. When every
-configured station has a completed result with status `review`, the next accepted
-login creates a result in `round + 1`. The increment and login are one transaction,
-so a rejected or failed login cannot advance the round. Restarting the controller
-preserves this history. One team's new round does not advance another team's round.
+```mermaid
+flowchart TD
+    R[All stations completed and reviewed] --> N[Publish round_complete routing result]
+    N --> A[Broker ACK for the handoff]
+    A --> T[Lock station and team; verify the saved review]
+    T --> I[Set final station idle; append idle event]
+    I --> E[Append round_complete event and keep results]
+    E --> C[Commit transaction]
+    C --> O[Publish idle status and review OK]
+    O --> L[Same team later requests login at a free station]
+    L --> V[Lock station and team and validate login]
+    V --> D[Delete only this team's results and save new login]
+    D --> F[Commit together and confirm login]
+```
 
-For example, Team-01's first five visits generate round-1 events. After the final
-review, the next login at station_2 generates a round-2 event and a separate
-round-2 result. All subsequent transitions for that visit use round 2. An old
-handoff acknowledgement still logs `idle` under its original visit's round, even
-if the team has already started its next round at another station.
+`round` is now **event metadata only**. New events use the latest recorded round
+for that team. If its latest event in that round is `round_complete`, the next
+login's events use the next number. Neither `results` nor `station_state` stores
+or filters by round. The existing MQTT routing `round` field remains history
+metadata for compatibility; the physical tag and team registration do not change.
 
-`station_events` is the chronological history: **what changed, and when?**
-Each accepted transition adds a new row instead of replacing the previous one.
-For example, Team-01 can have `login` at 14:00, `start` at 14:01, `complete` at
-14:04, and later `review` and `idle` events. The result retains the three-minute
-playing time even after the live station state is reset. An `idle` event keeps
-the finishing team's name and round for history; the live idle state has neither.
+### Duration highscores
 
-The controller performs these writes:
+`high_score.time` is PostgreSQL **INTERVAL**, so a 20-minute game is `00:20:00`,
+not a calendar timestamp or a time of day. Durations may exceed 24 hours.
+On accepted `complete`, the controller computes `completed_at - started_at` and
+atomically updates the station record only if it is faster. Equal times keep
+the existing winner. This write commits with the result, live state, and event;
+a database error cannot leave a partial highscore update.
 
-| Accepted transition | `station_state` | `results` | `station_events` |
-| --- | --- | --- | --- |
-| `login` | Set team, round, and `logged_in`. | Start a new round if all stations were reviewed; otherwise reject a replay in this round. Create or reset its unfinished result. | Append `login` with the accepted round. |
-| `start` | Set `running`. | Set `started_at` and result status. | Append `start`. |
-| `complete` | Set `reviewing`. | Set `completed_at` and result status. | Append `complete`. |
-| `review` | Keep `reviewing` and save score until handoff. | Save review and result status. | Append `review` with score. |
-| Handoff acknowledged | Set `idle` and clear team, round, and score. | Keep the finished result and its times. | Append `idle` with the finishing team's round. |
+`high_score_team` records each completed game's total, calculated as
+`SUM(completed_at - started_at)` across all configured stations. Walking, waiting,
+and review time are excluded. `team_name` is the game team ID (e.g. `Team-01`),
+not the NFC UID, and `round` identifies that team's game. Both score tables keep
+historical team names even if registrations later change.
+
+The team score is saved with the final handoff's idle transition and
+`round_complete` event in one transaction. No team score is written for a partial
+game. The `(team_name, round)` primary key makes retries idempotent. Live results
+remain visible until the next accepted login; clearing them never removes scores.
+After a full reset clears events, preserved team scores prevent reuse of their
+round numbers. A team with no saved scores starts at 1.
+
+Migration `0011_high_score_team` creates the team table; `0012_team_score_constraints`
+widens names to 255 characters, requires non-null/non-negative durations and
+positive rounds, and indexes total time. It backfills finished games only when
+all current results are still available and the latest event marks completion.
+Previously cleared results cannot be recovered by that backfill.
+
+For Grafana or the database viewer:
+
+```sql
+-- Fastest game runs across teams (a team may appear for several rounds).
+SELECT team_name AS team_id, "round", time,
+       EXTRACT(EPOCH FROM time) AS total_seconds
+FROM high_score_team
+ORDER BY time, team_name, "round";
+
+-- Fastest game for each team.
+SELECT DISTINCT ON (team_name) team_name AS team_id, "round", time
+FROM high_score_team
+ORDER BY team_name, time, "round";
+```
+
+If the table is missing in a viewer, refresh the `public` schema and verify that
+you are connected to the same database as the controller. Check
+`SELECT version_num FROM alembic_version;`: the table first appears at `0011`.
+Run the deployment migration commands below to apply new revisions; restarting
+only the controller does not run Alembic.
+
+Review scores remain on `station_events` entries with `event_type = 'review'`.
+Historical playing times can be reconstructed from start/complete timestamps,
+matched by team, station, and event round. Grafana dashboard queries are unchanged
+in this change: panels that still read `results` will lose that team's historical
+rows after an automatic reset and need a separate query update later.
 
 Each transition uses the same database timestamp for its state, result, and
 event writes. A status query only reads committed state and does not create an
@@ -264,7 +321,8 @@ idle state; a failed handoff release stays in `reviewing` until a reconnect retr
 decision after the review transaction commits.
 [`db.get_routing_snapshot`](../gameController/db.py) reads occupancy and results in
 a read-only `REPEATABLE READ` transaction. It first checks the team name, then
-joins `station` to `station_state` and to this team's `results` for the saved round.
+joins `station` to `station_state` and to this team's current `results`. It also
+reads the latest event to label the outgoing routing message with history metadata.
 No migration or in-memory game-state cache is needed for routing.
 
 The station list comes from the database `station` table, ordered by
@@ -275,7 +333,7 @@ For example, leaving station_4 with five stations gives the search order
 
 | Classification | Exact rule |
 | --- | --- |
-| Completed for this team and round | Result has `completed_at`, or `results.status` is `complete` or `review`. Never suggest replaying it. |
+| Completed in this team's current game | Result has `completed_at`, or `results.status` is `complete` or `review`. Never suggest replaying it. |
 | Reviewed for round completion | Result has `completed_at` **and** `results.status = 'review'`. All configured stations must meet this rule. |
 | Available candidate | Unfinished, `station_state.status = 'idle'`, and `team_id IS NULL`. |
 | Busy candidate | Unfinished, status is `logged_in`, `running`, or `reviewing`, and `team_id IS NOT NULL`. |
@@ -288,7 +346,7 @@ If every configured station is reviewed, `round_complete` takes precedence.
 
 ```mermaid
 flowchart TD
-    R[Read configured stations and results for this team and round] --> D{All configured stations reviewed?}
+    R[Read configured stations and this team's live results] --> D{All configured stations reviewed?}
     D -->|Yes| F[round_complete; destination null]
     D -->|No| S[Exclude current station, missing state, and completed results]
     S --> A{Any remaining station idle?}
@@ -306,8 +364,8 @@ flowchart TD
 Circular order starts after the source station and wraps from station_6 to
 station_2. A result with `completed_at` set or status `complete`/`review` is
 excluded, matching the login replay checks. Round completion requires every
-configured station to have a completed, reviewed result. Earlier rounds do not
-block destinations in a later round.
+configured station to have a completed, reviewed result. The next accepted login
+clears the finished team's results, so its previous game does not block new destinations.
 
 #### Routing results on MQTT
 
@@ -336,27 +394,28 @@ All routing outcomes release the source after the broker acknowledges the routin
 message, so teams do not block each other by occupying finished stations. A
 routing database error instead returns `HANDOFF_ERROR` and preserves the saved
 review for recovery. Reconnect recovery recalculates the suggestion from current
-data using the original visit's round; it does not start the next round.
+live results and event metadata; it does not clear progress.
 
 #### Delivery, release, and retries
 
 `send_next_station` tracks the committed source-state snapshot in
 `pending_next_stations`, keyed by the MQTT publish message ID. When the broker
 acknowledges that message, `on_publish` releases the source in a new transaction:
-it sets `idle`, clears the team, round, and review score, and appends an `idle`
-event using the finishing team's original round. Only then does it send
+it sets `idle`, clears the team, and appends an `idle` event.
+If all stations are reviewed, it keeps this team's results and appends
+`round_complete`, retaining the event round as history. Only then does it send
 `/status` with idle/null team and `/error` with `return: "OK", action: "review"`.
 This also happens for `queued` and both null-destination outcomes.
 
-The release checks the saved team, `updated_at`, and reviewing state with a saved
-score. An acknowledgement for an older visit cannot release a newer one. Broker
+The release checks the saved team, `updated_at`, reviewing state, and
+`results.status = 'review'`. An acknowledgement for an older visit cannot release a newer one. Broker
 acknowledgement confirms MQTT receipt, not that a station displayed the directions.
 
 An unknown routing team, failed routing query, failed publish, rejected broker
 acknowledgement, or failed idle transaction reports `HANDOFF_ERROR` when possible.
 The already committed review is retained for recovery. There is no periodic
-rerouting timer: controller reconnect reloads `reviewing` rows with a non-null
-score and computes a new suggestion from current occupancy. A score of zero is
+rerouting timer: controller reconnect reloads `reviewing` rows whose matching
+result has status `review` and computes a new suggestion from current occupancy. A score of zero is
 saved, too. Duplicate replies and a changed destination are therefore possible.
 Once the source is idle, its destination is not stored for replay; station
 reconnects and status queries do not resend it.
@@ -369,9 +428,9 @@ its rating from a review already saved. A score of **0 counts as saved**.
 ```mermaid
 flowchart TD
     C[Controller connects or reconnects to MQTT] --> R[Read configured stations in reviewing]
-    R --> Q{review_score is NULL?}
-    Q -->|Yes| W[Keep reviewing; wait for the team's review request]
-    Q -->|No: 0, 1, or 2| N[Recalculate nextStation; publish and track MQTT message ID]
+    R --> Q{Matching result has status review?}
+    Q -->|No| W[Keep reviewing; wait for the team's review request]
+    Q -->|Yes| N[Recalculate nextStation; publish and track MQTT message ID]
     N --> A{Broker acknowledges delivery?}
     A -->|Still waiting| P[Keep saved review and occupied station]
     A -->|Publish or delivery fails| E[Report HANDOFF_ERROR; keep reviewing]
@@ -395,6 +454,21 @@ state for a database that predates the state table. Existing team names must be
 unique before applying this migration.
 Existing result timestamps must also satisfy the timing rule before applying
 `0003_result_timing`; inconsistent records are not silently rewritten.
+
+### Applying 0009
+
+The branch migration `0009_high_score` has been corrected before deployment.
+It backfills highscores from existing timed results, marks already-finished games,
+keeps only the latest unfinished live results, and replaces the results primary key
+with `(team_id, station_id)`. Existing event rows are preserved. Pending review
+handoffs remain for the controller to finish after restart.
+Downgrading restores live round columns but cannot recreate cleared historical
+result rows, and removes the highscore table. Event history remains intact.
+
+Migration `0010_remove_state_review` drops only the live review-score column
+and its check constraint. Results and review events are preserved, including
+pending handoffs. Downgrading restores the field from accepted current results.
+Run `alembic upgrade head` even if 0009 was already applied.
 
 Apply migrations before starting the updated controller (PostgreSQL must be running):
 
@@ -453,7 +527,11 @@ WHERE $__timeFilter(created_at)
 ORDER BY created_at DESC, id DESC;
 ```
 
-For a Grafana table panel showing completed playing times per team and station:
+**Legacy timing query (schema through 0008):** the existing example below uses
+`results.round`, removed by 0009, and reads results that will now be reset. It is
+retained here as reference; it needs a separate Grafana query update before use
+with the new schema. Use event history for historical timings and `high_score`
+for station records.
 
 ```sql
 SELECT r.completed_at AS "time", t.name AS team_name, s.name AS station_name,
@@ -466,10 +544,12 @@ WHERE r.completed_at IS NOT NULL AND $__timeFilter(r.completed_at)
 ORDER BY r.completed_at DESC, t.name, s.name;
 ```
 
-Set the `duration_seconds` field unit to seconds in Grafana. The panel shows
-results as soon as the controller accepts a complete action.
+For duration-based panels, use seconds as the Grafana field unit.
+`EXTRACT(EPOCH FROM high_score.time)` converts an interval to seconds.
 
-For a table panel showing the current station state:
+Legacy current-state query (before 0010): `ss.review_score` no longer exists.
+The query is retained unchanged as a reference; live panels need only state and
+team, while review totals must come from `station_events`.
 
 ```sql
 SELECT s.name AS station, ss.team_id, ss.status, ss.review_score, ss.updated_at
@@ -485,15 +565,15 @@ visible even when its last change happened outside the dashboard time range.
 ## Manual reset and station unlock
 
 Run `python gameClient/resetGame.py --station station_3` on the Docker host to release a
-stuck station. Its assigned team is freed, and **only the active visit's result
-and events** (matching station, team, and round) are deleted, including a saved
-completion/review. This permits retrying the station in the same round. Previous
-rounds and other stations' data are preserved. An already-idle station keeps its
+stuck station. Its assigned team is freed and only the active result is deleted.
+Events and highscores stay intact; an additional `reset` event records the unlock.
+This permits retrying the station in the same game. Other stations are untouched. An already-idle station keeps its
 history; a missing state row is recreated. Unknown station IDs fail without edits.
 
 Run `python gameClient/resetGame.py --all` to delete **all results and events**, reset event
-numbering, and recreate idle states from the station catalog. Every team starts
-again at round 1. Team registrations, station catalog/routing order, schema,
+numbering, and recreate idle states from the station catalog. Teams start at an
+event round after their highest saved team score (or 1 if none). Highscores,
+team registrations, station catalog/routing order, schema,
 and Grafana settings stay intact; this is a game reset, not a database-volume deletion.
 
 Pause station clients and auto-play before running either command. The script

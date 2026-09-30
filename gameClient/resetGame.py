@@ -34,28 +34,33 @@ def reset_database(station_id=None):
                 cur.execute("TRUNCATE results, station_events RESTART IDENTITY")
                 cur.execute("DELETE FROM station_state")
                 cur.execute("INSERT INTO station_state (station_id) SELECT station_id FROM station")
-                message = "All game results/events cleared; every station is idle. Teams start again at round 1."
+                message = "All game results/events cleared; every station is idle. Saved highscores and their round numbers are preserved."
             else:
                 cur.execute("SELECT station_id FROM station WHERE station_id = %s", (station_id,))
                 if cur.fetchone() is None:
                     raise ValueError(f"Unknown station: {station_id}")
-                cur.execute("SELECT team_id, status, \"round\" FROM station_state WHERE station_id = %s",
+                cur.execute("SELECT team_id, status FROM station_state WHERE station_id = %s",
                             (station_id,))
                 state = cur.fetchone()
                 if state is not None and state["team_id"] is not None:
-                    # Remove only this active visit so the same team can retry it,
-                    # even if complete/review had already been saved before failure.
-                    params = (station_id, state["team_id"], state["round"])
-                    cur.execute('DELETE FROM results WHERE station_id = %s AND team_id = %s AND "round" = %s', params)
-                    cur.execute('DELETE FROM station_events WHERE station_id = %s AND team_id = %s AND "round" = %s', params)
+                    # Unlock only this team's current visit. Preserve event history
+                    # and highscores; a reset is itself an auditable event.
+                    cur.execute('DELETE FROM results WHERE station_id = %s AND team_id = %s',
+                                (station_id, state["team_id"]))
+                    cur.execute(
+                        """INSERT INTO station_events (station_id, team_id, event_type, "round")
+                           VALUES (%s, %s, 'reset', COALESCE(
+                               (SELECT MAX("round") FROM station_events WHERE team_id = %s), 1))""",
+                        (station_id, state["team_id"], state["team_id"]),
+                    )
                 cur.execute(
                     """INSERT INTO station_state (station_id) VALUES (%s)
                        ON CONFLICT (station_id) DO UPDATE SET status = 'idle',
-                           team_id = NULL, review_score = NULL, "round" = NULL,
+                           team_id = NULL,
                            updated_at = clock_timestamp()""",
                     (station_id,),
                 )
-                message = f"{station_id} unlocked. Its active visit was removed; other visits and stations are preserved."
+                message = f"{station_id} unlocked. Its active result was removed; event history, highscores, and other stations are preserved."
     print(f"[RESET] {message}", flush=True)
 
 

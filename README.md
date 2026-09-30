@@ -190,6 +190,7 @@ sequenceDiagram
 
 Compact labels such as `running + Team-01` use the JSON shapes in the reply table.
 Every successful action is saved before its confirmation is sent. A team can
+
 complete each station once per game. After the final review handoff, its final
 station becomes idle, but all results remain visible. When the same team next
 logs into a free station, the backend clears that team's previous results and
@@ -197,6 +198,7 @@ starts a fresh game in the same transaction. Rejected logins do not clear result
 Events, station highscores, and team totals remain saved. Each completed game
 gets a `high_score_team` row with the team name, round, and sum of all station
 playing times (excluding walking, waiting, and reviews).
+
 
 ## 4. Automatic next station
 

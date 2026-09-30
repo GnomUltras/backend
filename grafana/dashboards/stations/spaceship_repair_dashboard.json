@@ -18,7 +18,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 0,
-  "id": 2,
+  "id": 7,
   "links": [],
   "panels": [
     {
@@ -34,32 +34,37 @@
           },
           "mappings": [
             {
-              "type": "regex",
               "options": {
-                "pattern": "^idle.*",
-                "result": { "color": "#3fd18a", "index": 0, "text": "$&" }
-              }
+                "pattern": "^free.*",
+                "result": {
+                  "color": "#3fd18a",
+                  "index": 0,
+                  "text": "$&"
+                }
+              },
+              "type": "regex"
             },
             {
-              "type": "regex",
               "options": {
-                "pattern": "^logged_in.*",
-                "result": { "color": "#ffc44d", "index": 1, "text": "$&" }
-              }
+                "pattern": "^occupied.*",
+                "result": {
+                  "color": "#ff5d5d",
+                  "index": 1,
+                  "text": "$&"
+                }
+              },
+              "type": "regex"
             },
             {
-              "type": "regex",
               "options": {
-                "pattern": "^running.*",
-                "result": { "color": "#ff5d5d", "index": 2, "text": "$&" }
-              }
-            },
-            {
-              "type": "regex",
-              "options": {
-                "pattern": "^reviewing.*",
-                "result": { "color": "#5aa9ff", "index": 3, "text": "$&" }
-              }
+                "pattern": "^pending.*",
+                "result": {
+                  "color": "#ffc44d",
+                  "index": 2,
+                  "text": "$&"
+                }
+              },
+              "type": "regex"
             }
           ],
           "thresholds": {
@@ -149,6 +154,13 @@
           "color": {
             "mode": "palette-classic"
           },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            }
+          },
           "mappings": []
         },
         "overrides": [
@@ -221,6 +233,7 @@
         "y": 4
       },
       "id": 9,
+      "maxPerRow": 6,
       "options": {
         "displayLabels": [
           "percent"
@@ -241,12 +254,16 @@
           "fields": "/.*/",
           "values": false
         },
+        "sort": "desc",
         "tooltip": {
+          "hideZeros": false,
           "mode": "single",
           "sort": "none"
         }
       },
       "pluginVersion": "12.2.0",
+      "repeat": "station",
+      "repeatDirection": "h",
       "targets": [
         {
           "datasource": {
@@ -278,10 +295,7 @@
         }
       ],
       "title": "Review – ${station:text}",
-      "type": "piechart",
-      "repeat": "station",
-      "repeatDirection": "h",
-      "maxPerRow": 6
+      "type": "piechart"
     },
     {
       "datasource": {
@@ -435,7 +449,7 @@
         "overrides": []
       },
       "gridPos": {
-        "h": 10,
+        "h": 7,
         "w": 12,
         "x": 0,
         "y": 19
@@ -455,7 +469,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH rep AS (\n  SELECT station_id, team_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL)\nSELECT \"Station\",\"Team\",\"Time\" FROM (\n  SELECT DISTINCT ON (station_id)\n         station_id AS \"Station\",\n         team_id AS \"Team\",\n         lpad(floor(secs/60)::int::text,2,'0') || ':' || lpad((floor(secs)::int % 60)::text,2,'0') AS \"Time\"\n  FROM rep\n  ORDER BY station_id, secs) t\nORDER BY \"Station\"",
+          "rawSql": "SELECT s.name AS \"Station\",\n       COALESCE(h.team_name, '–') AS \"Team\",\n       COALESCE(\n         lpad(floor(EXTRACT(EPOCH FROM h.\"time\")/60)::int::text, 2, '0') || ':' ||\n         lpad((floor(EXTRACT(EPOCH FROM h.\"time\"))::int % 60)::text, 2, '0'),\n         '–') AS \"Time\"\nFROM station s\nLEFT JOIN high_score h ON h.station_id = s.station_id\nORDER BY s.routing_order",
           "refId": "A",
           "sql": {
             "columns": [
@@ -540,7 +554,7 @@
         ]
       },
       "gridPos": {
-        "h": 10,
+        "h": 7,
         "w": 12,
         "x": 12,
         "y": 19
@@ -560,7 +574,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH rep AS (\n  SELECT station_id, team_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL)\nSELECT ROW_NUMBER() OVER (ORDER BY SUM(secs)) AS \"#\",\n       team_id AS \"Team\",\n       lpad(floor(SUM(secs)/60)::int::text,2,'0') || ':' || lpad((floor(SUM(secs))::int % 60)::text,2,'0') AS \"Total time\"\nFROM rep\nGROUP BY team_id\nORDER BY 1",
+          "rawSql": "SELECT ROW_NUMBER() OVER (ORDER BY \"time\") AS \"#\",\n       team_name AS \"Team\",\n       round AS \"Round\",\n       lpad(floor(EXTRACT(EPOCH FROM \"time\")/60)::int::text, 2, '0') || ':' ||\n       lpad((floor(EXTRACT(EPOCH FROM \"time\"))::int % 60)::text, 2, '0') AS \"Total time\"\nFROM (\n  SELECT DISTINCT ON (team_name) team_name, \"time\", round\n  FROM high_score_team\n  WHERE \"time\" IS NOT NULL\n  ORDER BY team_name, \"time\" ASC\n) best\nORDER BY \"time\" ASC\nLIMIT 5",
           "refId": "A",
           "sql": {
             "columns": [
@@ -649,5 +663,5 @@
   "timezone": "browser",
   "title": "Spaceship Repair Control",
   "uid": "stationview",
-  "version": 4
+  "version": 1
 }

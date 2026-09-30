@@ -323,6 +323,26 @@
                 "value": "right"
               }
             ]
+          },
+          {
+            "matcher": { "id": "byName", "options": "Done" },
+            "properties": [
+              {
+                "id": "mappings",
+                "value": [
+                  {
+                    "type": "value",
+                    "options": {
+                      "1": { "color": "#3fd18a", "index": 0, "text": "✔" },
+                      "0": { "color": "#ff5d5d", "index": 1, "text": "✘" }
+                    }
+                  }
+                ]
+              },
+              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
+              { "id": "custom.align", "value": "center" },
+              { "id": "custom.width", "value": 70 }
+            ]
           }
         ]
       },

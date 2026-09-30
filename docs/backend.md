@@ -5,6 +5,9 @@
 For station integration, use the README. This page covers deployment, stored
 state, team registration, next-station routing, and Grafana queries.
 
+For a walkthrough with links to the responsible functions, see the
+[game logic code guide](game-logic-guide.md).
+
 ## System overview
 
 ```mermaid
@@ -565,9 +568,11 @@ visible even when its last change happened outside the dashboard time range.
 ## Manual reset and station unlock
 
 Run `python gameClient/resetGame.py --station station_3` on the Docker host to release a
-stuck station. Its assigned team is freed and only the active result is deleted.
+stuck station. Its assigned team is freed and its state becomes `idle`; all results are preserved.
 Events and highscores stay intact; an additional `reset` event records the unlock.
-This permits retrying the station in the same game. Other stations are untouched. An already-idle station keeps its
+Completed stations remain protected against replay. An unfinished visit can be restarted by logging in again.
+The normal next-login reset still applies to teams that have reviewed every station.
+Other stations are untouched. An already-idle station keeps its
 history; a missing state row is recreated. Unknown station IDs fail without edits.
 
 Run `python gameClient/resetGame.py --all` to delete **all results and events**, reset event

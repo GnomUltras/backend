@@ -428,7 +428,7 @@ Run these on the PC/Pi hosting the Docker stack, from this repository (use
 `python3` on the Pi). Pause auto-play and station requests first.
 
 ```sh
-# Unlock one station and remove its current result; preserve events/highscores.
+# Unlock one station; preserve all results, events, and highscores.
 python gameClient/resetGame.py --station station_3
 
 # Delete ALL game results/events and return every station to idle; preserve highscores.

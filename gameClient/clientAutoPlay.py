@@ -1,4 +1,4 @@
-"""Play teams concurrently, then leave three live station states for Grafana."""
+"""Play four teams concurrently: finish two and leave two partway through a game."""
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import os
@@ -11,8 +11,8 @@ import clientStatus
 
 
 # Local script / local Docker: "localhost"; Docker on the Pi: "192.168.1.11"
-MQTT_HOST = "localhost"
-# MQTT_HOST = "192.168.1.11"
+# MQTT_HOST = "localhost"
+MQTT_HOST = "192.168.1.11"
 MQTT_PORT = int(os.getenv("MQTT_PORT", "1883"))
 MQTT_PASSWORD = os.getenv("MQTT_PASSWORD", "testen123")
 RESPONSE_TIMEOUT = float(os.getenv("RESPONSE_TIMEOUT", "5"))
@@ -31,12 +31,16 @@ TEAMS = (
     ("Team-01", "74 FA CB 01", 0),
     ("Team-02", "35 7F CB 01", 1),
     ("Team-03", "2C A1 19 49", 2),
+    ("Team-04", "63 12 46 16", 1),
 )
 
 # Serialize simulated visitors to each station, not the entire game. This also
 # keeps MQTT replies unambiguous because the protocol has no request IDs.
 STATION_LOCKS = {station_id: Lock() for station_id in STATION_IDS}
 STOP = Event()
+FULL_GAMES_DONE = (Event(), Event())
+# The other teams finish two visits, then stop at their third station.
+PARTIAL_VISITS = 2
 
 
 def configure_clients():
@@ -83,14 +87,17 @@ def send_action(station_id, team_id, nfc_uuid, action, review_score=None):
     return response
 
 
-def play_team(team_id, nfc_uuid, review_score, start_station=None):
-    """Visit each station once, following the controller's nextStation replies."""
+def play_team(team_id, nfc_uuid, review_score, start_station=None, stop_state=None):
+    """Follow routing through a full game or stop partway through the demo."""
     stations = set(STATION_IDS)
     station_id = start_station or START_STATION
     visited = set()
-    print(f"\n[TEAM] Starting a full round for {team_id} ({nfc_uuid}).", flush=True)
+    print(f"\n[TEAM] Starting a game for {team_id} ({nfc_uuid}).", flush=True)
 
     while len(visited) < len(stations):
+        if stop_state is not None and len(visited) == PARTIAL_VISITS:
+            leave_partial_visit(team_id, nfc_uuid, station_id, visited, stop_state)
+            return
         if station_id not in stations or station_id in visited:
             raise RuntimeError(f"Invalid or repeated destination for {team_id}: {station_id!r}")
         print(f"[VISIT {len(visited) + 1}/{STATION_COUNT}] {team_id} at {station_id}", flush=True)
@@ -129,34 +136,59 @@ def simulate_play(station_id):
         raise RuntimeError("Auto-play stopped.")
 
 
-def leave_live_states():
-    """Start new visits with separate teams and stop at three different stages."""
-    for station_id, (team_id, nfc_uuid, _), status in zip(
-        STATION_IDS[:3], TEAMS, ("logged_in", "running", "reviewing")
-    ):
-        wait_for_idle(station_id)
-        send_action(station_id, team_id, nfc_uuid, "login")
-        if status in ("running", "reviewing"):
+def leave_partial_visit(team_id, nfc_uuid, destination, visited, stop_state):
+    """Leave a third visit open after both full-game teams have finished."""
+    # Wait between visits, with no station occupied or lock held. Otherwise a
+    # parked team could permanently block a station either finishing team needs.
+    print(f"[DEMO WAIT] {team_id}: {len(visited)} stations done; waiting to leave a live state.", flush=True)
+    for completed in FULL_GAMES_DONE:
+        while not completed.wait(0.1):
+            if STOP.is_set():
+                raise RuntimeError("Auto-play stopped.")
+    index = STATION_IDS.index(destination)
+    candidates = STATION_IDS[index:] + STATION_IDS[:index]
+    for station_id in candidates:
+        if station_id in visited:
+            continue
+        with STATION_LOCKS[station_id]:
+            if STOP.is_set():
+                raise RuntimeError("Auto-play stopped.")
+            status = clientStatus.request_status(station_id)
+            if status is None or status.get("return") == "ERROR":
+                raise RuntimeError(f"Could not read demo station {station_id}: {status}")
+            if status["status"] != "idle" or status["team_id"] is not None:
+                continue  # The other parked team may have taken the suggested station.
+            send_action(station_id, team_id, nfc_uuid, "login")
             send_action(station_id, team_id, nfc_uuid, "start")
-        if status == "reviewing":
-            simulate_play(station_id)
-            send_action(station_id, team_id, nfc_uuid, "complete")
-        # Do not submit review: its handoff would automatically release the station.
-        print(f"[LIVE STATE] {station_id}: {status} with {team_id} (left occupied).", flush=True)
+            if stop_state == "reviewing":
+                simulate_play(station_id)
+                send_action(station_id, team_id, nfc_uuid, "complete")
+            print(f"[LIVE STATE] {team_id} at {station_id}: {stop_state}; game unfinished.", flush=True)
+            return
+    raise RuntimeError(f"No free, unvisited demo station for {team_id}.")
+
+
+def run_team(team, start_station, stop_state, completed=None):
+    play_team(*team, start_station, stop_state)
+    if completed is not None:
+        completed.set()
 
 
 def main():
     configure_clients()
     STOP.clear()
+    for completed in FULL_GAMES_DONE:
+        completed.clear()
     try:
-        if STATION_COUNT < 3 or len(TEAMS) != 3:
-            raise ValueError("The demo requires at least three stations and exactly three teams.")
+        if STATION_COUNT < PARTIAL_VISITS + 2 or len(TEAMS) != 4:
+            raise ValueError("The demo requires at least four stations and exactly four teams.")
         if not 0 <= PLAY_SECONDS_MIN <= PLAY_SECONDS_MAX:
             raise ValueError("Play durations must be non-negative with MIN <= MAX.")
         first = STATION_IDS.index(START_STATION)
         with ThreadPoolExecutor(max_workers=len(TEAMS)) as pool:
-            jobs = [pool.submit(play_team, *team, STATION_IDS[(first + i) % STATION_COUNT])
-                    for i, team in enumerate(TEAMS)]
+            jobs = [pool.submit(run_team, team, STATION_IDS[(first + i) % STATION_COUNT], stop_state,
+                                FULL_GAMES_DONE[i] if i < 2 else None)
+                    for i, (team, stop_state) in enumerate(zip(TEAMS, (None, None, "running", "reviewing")))]
             try:
                 for job in as_completed(jobs):
                     job.result()
@@ -164,10 +196,6 @@ def main():
                 # Wake sleeping/waiting teams before the executor joins them.
                 STOP.set()
                 raise
-        # Reuse the first team's chip; the controller advances its round automatically.
-        print(f"\n[EXTRA ROUND] Playing another full round with {TEAMS[0][0]}.", flush=True)
-        play_team(*TEAMS[0])
-        leave_live_states()
     except (OSError, RuntimeError, ValueError) as exc:
         print(f"[STOPPED] {exc}", flush=True)
         print("Check station status before rerunning; accepted actions remain saved.", flush=True)
@@ -175,8 +203,10 @@ def main():
     except KeyboardInterrupt:
         print("\n[STOPPED] Auto-play interrupted. Accepted actions remain saved.", flush=True)
         return 1
-    print(f"\n[DONE] All {len(TEAMS)} teams completed a full round; {TEAMS[0][0]} completed an extra round.", flush=True)
-    print("Three stations remain occupied for Grafana. Finish those visits before running auto-play again.", flush=True)
+    print(f"\n[DONE] {TEAMS[0][0]} and {TEAMS[1][0]} completed one round each. "
+          f"{TEAMS[2][0]} remains running; {TEAMS[3][0]} remains reviewing "
+          "after two finished stations each.", flush=True)
+    print("Finish or unlock the two occupied stations before rerunning auto-play.", flush=True)
     return 0
 
 

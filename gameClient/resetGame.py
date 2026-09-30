@@ -43,10 +43,8 @@ def reset_database(station_id=None):
                             (station_id,))
                 state = cur.fetchone()
                 if state is not None and state["team_id"] is not None:
-                    # Unlock only this team's current visit. Preserve event history
-                    # and highscores; a reset is itself an auditable event.
-                    cur.execute('DELETE FROM results WHERE station_id = %s AND team_id = %s',
-                                (station_id, state["team_id"]))
+                    # Release occupancy without changing any team's progress.
+                    # Keep an audit entry for the manual unlock.
                     cur.execute(
                         """INSERT INTO station_events (station_id, team_id, event_type, "round")
                            VALUES (%s, %s, 'reset', COALESCE(
@@ -60,7 +58,7 @@ def reset_database(station_id=None):
                            updated_at = clock_timestamp()""",
                     (station_id,),
                 )
-                message = f"{station_id} unlocked. Its active result was removed; event history, highscores, and other stations are preserved."
+                message = f"{station_id} unlocked. All results, event history, highscores, and other stations are preserved."
     print(f"[RESET] {message}", flush=True)
 
 
@@ -74,7 +72,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--all", action="store_true", help="Delete ALL game results/events and set every station idle; keep teams/stations.")
-    mode.add_argument("--station", metavar="ID", help="Unlock one station and remove only its active visit so the team can retry.")
+    mode.add_argument("--station", metavar="ID", help="Unlock one station; preserve all results and highscores.")
     parser.add_argument("--database", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.station is not None and not args.station.strip():

@@ -167,7 +167,7 @@ controller selects a destination from current occupancy and that team's live res
 State transitions and acknowledgement handling remain controller responsibilities.
 The controller locks the station and team rows, checks the action against the current
 state, and writes state, result, and event in one transaction. The team lock also
-serializes final resets and login occupancy checks across stations. After acquiring
+serializes new-game resets and login occupancy checks across stations. After acquiring
 the team lock, login reads `station_state` for an existing assignment and returns
 `TEAM_BUSY` without writing anything if one exists. This includes `logged_in`,
 `running`, and `reviewing`, even after a score is saved while the handoff is pending.
@@ -213,14 +213,17 @@ sequenceDiagram
 | Data | While playing | After the team finishes all stations |
 | --- | --- | --- |
 | `station_state` | Current state and assigned team | Final station becomes `idle`; team becomes null. Other teams are untouched. |
-| `results` | One row per team/station; completed stations stay blocked against replay | All rows for this team are deleted, matching the initial unplayed state. |
+| `results` | One row per team/station; completed stations stay blocked against replay | All rows remain visible until this team's next accepted login. |
 | `station_events` | Append login/start/complete/review/idle and their timestamps/scores | Preserve every event; append `round_complete` for the finished game. |
 | `high_score` | On `complete`, keep the fastest start-to-complete duration per station | Preserve the winning name and duration. |
 
-The reset runs **after the final review's nextStation message is acknowledged by
-the broker**. Until then, the saved review and results remain available for recovery.
-Idle state, result deletion, and the completion event commit in one transaction.
-A failure rolls everything back. The team lock prevents a fresh login during reset.
+The final broker acknowledgement releases the station and records game completion,
+but does not clear results. The reset runs **on the same team's next accepted login**,
+at any free station, after every configured station has been completed and reviewed.
+Only that team's results are deleted; its event history and highscores stay intact.
+Result deletion and the new login commit in one transaction. A busy station,
+pending handoff, invalid request, or failed write leaves the completed results intact.
+The team lock serializes competing logins, so only one starts the next game.
 
 ```mermaid
 flowchart TD
@@ -228,11 +231,13 @@ flowchart TD
     N --> A[Broker ACK for the handoff]
     A --> T[Lock station and team; verify the saved review]
     T --> I[Set final station idle; append idle event]
-    I --> D[Delete this team's live results]
-    D --> E[Append round_complete event; keep all previous events]
+    I --> E[Append round_complete event and keep results]
     E --> C[Commit transaction]
     C --> O[Publish idle status and review OK]
-    C --> L[Same NFC tag can log in again with fresh progress]
+    O --> L[Same team later requests login at a free station]
+    L --> V[Lock station and team and validate login]
+    V --> D[Delete only this team's results and save new login]
+    D --> F[Commit together and confirm login]
 ```
 
 `round` is now **event metadata only**. New events use the latest recorded round
@@ -313,8 +318,8 @@ flowchart TD
 Circular order starts after the source station and wraps from station_6 to
 station_2. A result with `completed_at` set or status `complete`/`review` is
 excluded, matching the login replay checks. Round completion requires every
-configured station to have a completed, reviewed result. Finishing a whole game clears its results, so an earlier game cannot block
-destinations when the same tag is reused.
+configured station to have a completed, reviewed result. The next accepted login
+clears the finished team's results, so its previous game does not block new destinations.
 
 #### Routing results on MQTT
 
@@ -343,7 +348,7 @@ All routing outcomes release the source after the broker acknowledges the routin
 message, so teams do not block each other by occupying finished stations. A
 routing database error instead returns `HANDOFF_ERROR` and preserves the saved
 review for recovery. Reconnect recovery recalculates the suggestion from current
-live results and event metadata; it does not clear progress before broker acknowledgement.
+live results and event metadata; it does not clear progress.
 
 #### Delivery, release, and retries
 
@@ -351,7 +356,7 @@ live results and event metadata; it does not clear progress before broker acknow
 `pending_next_stations`, keyed by the MQTT publish message ID. When the broker
 acknowledges that message, `on_publish` releases the source in a new transaction:
 it sets `idle`, clears the team, and appends an `idle` event.
-If all stations are reviewed, it also clears this team's results and appends
+If all stations are reviewed, it keeps this team's results and appends
 `round_complete`, retaining the event round as history. Only then does it send
 `/status` with idle/null team and `/error` with `return: "OK", action: "review"`.
 This also happens for `queued` and both null-destination outcomes.

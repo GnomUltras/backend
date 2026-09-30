@@ -109,7 +109,7 @@ def station_transaction(station_id):
 
 
 def lock_team(cur, team_id):
-    """Serialize a team's transitions and final reset across stations."""
+    """Serialize a team's transitions and new-game reset across stations."""
     cur.execute("SELECT 1 FROM team WHERE name = %s FOR UPDATE", (team_id,))
     return cur.fetchone() is not None
 

@@ -672,7 +672,7 @@
         "multi": true,
         "name": "station",
         "options": [],
-        "query": "JavaHOH : station_5, Passwort zurücksetzen : station_4, SQL : station_3, Morse : station_2, Quiz : station_6",
+        "query": "JavaHOH 05 : station_5, Passwort zurücksetzen 04 : station_4, SQL 03 : station_3, Morse 02 : station_2, Quiz 06 : station_6",
         "type": "custom"
       },
       {

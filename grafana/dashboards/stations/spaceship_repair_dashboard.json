@@ -339,7 +339,10 @@
             ]
           },
           {
-            "matcher": { "id": "byName", "options": "Done" },
+            "matcher": {
+              "id": "byName",
+              "options": "Done"
+            },
             "properties": [
               {
                 "id": "mappings",
@@ -347,15 +350,34 @@
                   {
                     "type": "value",
                     "options": {
-                      "1": { "color": "#3fd18a", "index": 0, "text": "✔" },
-                      "0": { "color": "#ff5d5d", "index": 1, "text": "✘" }
+                      "1": {
+                        "color": "#3fd18a",
+                        "index": 0,
+                        "text": "●"
+                      },
+                      "0": {
+                        "color": "#ff5d5d",
+                        "index": 1,
+                        "text": "●"
+                      }
                     }
                   }
                 ]
               },
-              { "id": "custom.cellOptions", "value": { "type": "color-background", "mode": "basic" } },
-              { "id": "custom.align", "value": "center" },
-              { "id": "custom.width", "value": 70 }
+              {
+                "id": "custom.cellOptions",
+                "value": {
+                  "type": "color-text"
+                }
+              },
+              {
+                "id": "custom.align",
+                "value": "center"
+              },
+              {
+                "id": "custom.width",
+                "value": 70
+              }
             ]
           }
         ]
@@ -390,7 +412,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH rep AS (\n  SELECT station_id,\n         MIN(EXTRACT(EPOCH FROM (completed_at - started_at))) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL\n    AND team_id = '${team:raw}'\n  GROUP BY station_id)\nSELECT s.name AS \"Station\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
+          "rawSql": "WITH rep AS (\n  SELECT station_id,\n         MIN(EXTRACT(EPOCH FROM (completed_at - started_at))) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL\n    AND team_id = '${team:raw}'\n  GROUP BY station_id)\nSELECT s.name AS \"Station\",\n       CASE WHEN r.secs IS NULL THEN 0 ELSE 1 END AS \"Done\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
           "refId": "A",
           "sql": {
             "columns": [
@@ -469,7 +491,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT s.name AS \"Station\",\n       COALESCE(h.team_name, '–') AS \"Team\",\n       COALESCE(\n         lpad(floor(EXTRACT(EPOCH FROM h.\"time\")/60)::int::text, 2, '0') || ':' ||\n         lpad((floor(EXTRACT(EPOCH FROM h.\"time\"))::int % 60)::text, 2, '0'),\n         '–') AS \"Time\"\nFROM station s\nLEFT JOIN high_score h ON h.station_id = s.station_id\nORDER BY s.routing_order",
+          "rawSql": "WITH rep AS (\n  SELECT station_id, team_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL)\nSELECT \"Station\",\"Team\",\"Time\" FROM (\n  SELECT DISTINCT ON (station_id)\n         station_id AS \"Station\",\n         team_id AS \"Team\",\n         lpad(floor(secs/60)::int::text,2,'0') || ':' || lpad((floor(secs)::int % 60)::text,2,'0') AS \"Time\"\n  FROM rep\n  ORDER BY station_id, secs) t\nORDER BY \"Station\"",
           "refId": "A",
           "sql": {
             "columns": [

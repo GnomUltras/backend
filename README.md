@@ -8,6 +8,23 @@ station state. All examples use `station_2`; replace it with your assigned ID.
 [Reconnect / errors](#5-reconnect-and-errors) · [Helpers](#6-time-and-connection-check) ·
 [Test clients](#7-try-it) · [Backend / database / Grafana](docs/backend.md)
 
+## System overview
+
+```mermaid
+flowchart LR
+    S[Station Pis] <-->|MQTT TCP 1883| M[Mosquitto]
+    M <-->|Requests and replies| B[Python controller]
+    B <-->|State, results, events| D[(PostgreSQL)]
+    D -->|SQL queries| G[Grafana]
+    G -->|HTTP 3000| U[Browser]
+```
+
+The MQTT server is `MQTT-GNOM` at `192.168.1.11`. Stations use IDs and MQTT
+usernames `station_2` (Morse), `station_3` (SQL), `station_4` (Password),
+`station_5` (JavaHOH), and `station_6` (Quiz). See the
+[station and IP setup tables](../README.md#ip-addresses-and-setup-status) for all
+ESP/Pi addresses and which static IPs are confirmed.
+
 ## 1. Connect
 
 ### Stations
@@ -173,9 +190,15 @@ sequenceDiagram
 
 Compact labels such as `running + Team-01` use the JSON shapes in the reply table.
 Every successful action is saved before its confirmation is sent. A team can
-complete each station once per game. After the final review handoff, its live
-results are cleared and its final station becomes idle. The same NFC tag can then
-start again. Events and station highscores remain saved.
+
+complete each station once per game. After the final review handoff, its final
+station becomes idle, but all results remain visible. When the same team next
+logs into a free station, the backend clears that team's previous results and
+starts a fresh game in the same transaction. Rejected logins do not clear results.
+Events, station highscores, and team totals remain saved. Each completed game
+gets a `high_score_team` row with the team name, round, and sum of all station
+playing times (excluding walking, waiting, and reviews).
+
 
 ## 4. Automatic next station
 
@@ -408,7 +431,7 @@ Run these on the PC/Pi hosting the Docker stack, from this repository (use
 # Unlock one station and remove its current result; preserve events/highscores.
 python gameClient/resetGame.py --station station_3
 
-# Delete ALL game results/events and return every station to idle, starting round 1.
+# Delete ALL game results/events and return every station to idle; preserve highscores.
 python gameClient/resetGame.py --all
 ```
 

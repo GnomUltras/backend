@@ -63,11 +63,11 @@ def init_game():
     return db.init_db()
 
 
-def event_round(last_event):
-    """Number log entries only; a completed game starts a new event round."""
+def event_round(last_event, starting_game=False):
+    """Advance event numbering only when a new login follows a completed game."""
     if last_event is None:
         return 1
-    return last_event["round"] + (last_event["event_type"] == "round_complete")
+    return last_event["round"] + (starting_game and last_event["event_type"] == "round_complete")
 
 
 def change_station_state(station_id, team_id, action, review_score=None, expected_updated_at=None):
@@ -101,7 +101,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
                 return None
             if action == "review" and result["status"] == "review":
                 raise RequestRejectedError("INVALID_STATE", "The review is already saved; the next-station handoff is pending.")
-        round_number = event_round(db.get_latest_team_event(cur, team_id))
+        round_number = event_round(db.get_latest_team_event(cur, team_id), starting_game=action == "login")
         if action == "login":
             # The team lock serializes logins even when they target different stations.
             occupied_station = db.get_team_station(cur, team_id)
@@ -110,6 +110,10 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
                     "TEAM_BUSY",
                     f"{team_id} is still assigned to {occupied_station}. Finish its review and handoff before logging in again.",
                 )
+            # Keep finished results visible until this team actually starts again.
+            # Reset and login commit together; rejected/failed logins keep them.
+            if set(configured_station_ids(cur)).issubset(db.get_reviewed_stations(cur, team_id)):
+                db.clear_team_results(cur, team_id)
             previous_result = db.get_result(cur, team_id, station_id)
             if previous_result is not None and (
                 previous_result["completed_at"] is not None
@@ -139,15 +143,14 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
                 db.save_high_score(cur, station_id, team_id, result["completed_at"] - result["started_at"])
 
         score = review_score if action == "review" else None
-        # Each handoff frees its station; the last handoff also clears team results.
+        # Each handoff frees its station, while the team's results stay visible.
         new_state = db.save_station_state(
             cur, station_id, None if action == "idle" else team_id, "idle" if action == "idle" else ACTION_STATE[action], timestamp,
         )
         db.log_event(cur, station_id, team_id, action, score, timestamp, round_number)
         if action == "idle" and set(configured_station_ids(cur)).issubset(db.get_reviewed_stations(cur, team_id)):
-            # This runs only after the final handoff is acknowledged. The team
-            # lock prevents a new login until the reset and history marker commit.
-            db.clear_team_results(cur, team_id)
+            # Record completion now; the next accepted login clears the results.
+            db.save_team_high_score(cur, team_id, round_number)
             db.log_event(cur, station_id, team_id, "round_complete", None, timestamp, round_number)
     # The transaction has committed before an MQTT handler can send a reply.
     print(f"[DB] {action}: {team_id} at {station_id}, round {round_number}", flush=True)

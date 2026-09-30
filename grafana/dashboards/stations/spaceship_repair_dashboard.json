@@ -36,28 +36,44 @@
             {
               "options": {
                 "pattern": "^idle.*",
-                "result": { "color": "#3fd18a", "index": 0, "text": "$&" }
+                "result": {
+                  "color": "#3fd18a",
+                  "index": 0,
+                  "text": "$&"
+                }
               },
               "type": "regex"
             },
             {
               "options": {
                 "pattern": "^logged_in.*",
-                "result": { "color": "#ffc44d", "index": 1, "text": "$&" }
+                "result": {
+                  "color": "#ffc44d",
+                  "index": 1,
+                  "text": "$&"
+                }
               },
               "type": "regex"
             },
             {
               "options": {
                 "pattern": "^running.*",
-                "result": { "color": "#ff5d5d", "index": 2, "text": "$&" }
+                "result": {
+                  "color": "#ff5d5d",
+                  "index": 2,
+                  "text": "$&"
+                }
               },
               "type": "regex"
             },
             {
               "options": {
                 "pattern": "^review.*",
-                "result": { "color": "#4da3ff", "index": 3, "text": "$&" }
+                "result": {
+                  "color": "#4da3ff",
+                  "index": 3,
+                  "text": "$&"
+                }
               },
               "type": "regex"
             }
@@ -115,7 +131,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "SELECT\n  COALESCE(s.status, 'idle') || ' · Group: ' || COALESCE(s.team_id, 'none') AS \"Status\"\nFROM (SELECT 1) d\nLEFT JOIN station_state s ON s.station_id = '${station:raw}'",
+          "rawSql": "SELECT\n  COALESCE(s.status, 'idle') AS \"Status\",\n  COALESCE(s.team_id, 'none') AS \"Group\"\nFROM (SELECT 1) d\nLEFT JOIN station_state s ON s.station_id = '${station:raw}'",
           "refId": "A",
           "sql": {
             "columns": [
@@ -322,9 +338,15 @@
         },
         "overrides": [
           {
-            "matcher": { "id": "byName", "options": "Station" },
+            "matcher": {
+              "id": "byName",
+              "options": "Station"
+            },
             "properties": [
-              { "id": "custom.width", "value": 100 }
+              {
+                "id": "custom.width",
+                "value": 80
+              }
             ]
           },
           {
@@ -336,6 +358,10 @@
               {
                 "id": "custom.align",
                 "value": "left"
+              },
+              {
+                "id": "custom.width",
+                "value": 75
               }
             ]
           },
@@ -349,19 +375,19 @@
                 "id": "mappings",
                 "value": [
                   {
-                    "type": "value",
                     "options": {
-                      "1": {
-                        "color": "#3fd18a",
-                        "index": 0,
-                        "text": "●"
-                      },
                       "0": {
                         "color": "#ff5d5d",
                         "index": 1,
                         "text": "●"
+                      },
+                      "1": {
+                        "color": "#3fd18a",
+                        "index": 0,
+                        "text": "●"
                       }
-                    }
+                    },
+                    "type": "value"
                   }
                 ]
               },
@@ -377,7 +403,7 @@
               },
               {
                 "id": "custom.width",
-                "value": 70
+                "value": 50
               }
             ]
           }

@@ -36,34 +36,29 @@
             {
               "type": "regex",
               "options": {
-                "pattern": "^free.*",
-                "result": {
-                  "color": "#3fd18a",
-                  "index": 0,
-                  "text": "$&"
-                }
+                "pattern": "^idle.*",
+                "result": { "color": "#3fd18a", "index": 0, "text": "$&" }
               }
             },
             {
               "type": "regex",
               "options": {
-                "pattern": "^occupied.*",
-                "result": {
-                  "color": "#ff5d5d",
-                  "index": 1,
-                  "text": "$&"
-                }
+                "pattern": "^logged_in.*",
+                "result": { "color": "#ffc44d", "index": 1, "text": "$&" }
               }
             },
             {
               "type": "regex",
               "options": {
-                "pattern": "^pending.*",
-                "result": {
-                  "color": "#ffc44d",
-                  "index": 2,
-                  "text": "$&"
-                }
+                "pattern": "^running.*",
+                "result": { "color": "#ff5d5d", "index": 2, "text": "$&" }
+              }
+            },
+            {
+              "type": "regex",
+              "options": {
+                "pattern": "^reviewing.*",
+                "result": { "color": "#5aa9ff", "index": 3, "text": "$&" }
               }
             }
           ],
@@ -120,7 +115,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH last AS (\n  SELECT event_type, team_id FROM station_events WHERE station_id = '${station:raw}' ORDER BY created_at DESC, id DESC LIMIT 1)\nSELECT\n  COALESCE((SELECT event_type FROM last), 'free') || ' · ' || CASE WHEN COALESCE((SELECT event_type FROM last), 'free') = 'free' THEN 'none' ELSE (SELECT team_id FROM last)::text END AS \"Status\"",
+          "rawSql": "SELECT\n  COALESCE(s.status, 'idle') || ' · Group: ' || COALESCE(s.team_id, 'none') AS \"Status\"\nFROM (SELECT 1) d\nLEFT JOIN station_state s ON s.station_id = '${station:raw}'",
           "refId": "A",
           "sql": {
             "columns": [
@@ -461,7 +456,7 @@
           }
         }
       ],
-      "title": "Leader Board /Stations/ – fastest repair per station",
+      "title": "Station-Highscore",
       "type": "table"
     },
     {
@@ -566,7 +561,7 @@
           }
         }
       ],
-      "title": "Leader Board /Teams/ – total repair time",
+      "title": "Highscore",
       "type": "table"
     }
   ],

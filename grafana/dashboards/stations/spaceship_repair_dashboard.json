@@ -688,14 +688,14 @@
           "type": "grafana-postgresql-datasource",
           "uid": "game-postgres"
         },
-        "definition": "SELECT name AS __text, id AS __value FROM team ORDER BY name",
+        "definition": "SELECT name AS __text, name AS __value FROM team ORDER BY name",
         "hide": 2,
         "includeAll": true,
         "label": "Team",
         "multi": true,
         "name": "team",
         "options": [],
-        "query": "SELECT name AS __text, id AS __value FROM team ORDER BY name",
+        "query": "SELECT name AS __text, name AS __value FROM team ORDER BY name",
         "refresh": 1,
         "sort": 1,
         "type": "query"

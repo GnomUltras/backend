@@ -43,14 +43,17 @@ def reset_database(station_id=None):
                             (station_id,))
                 state = cur.fetchone()
                 if state is not None and state["team_id"] is not None:
-                    # Release occupancy without changing any team's progress.
-                    # Keep an audit entry for the manual unlock.
+                    # Keep an audit entry for the team released by this reset.
                     cur.execute(
                         """INSERT INTO station_events (station_id, team_id, event_type, "round")
                            VALUES (%s, %s, 'reset', COALESCE(
                                (SELECT MAX("round") FROM station_events WHERE team_id = %s), 1))""",
                         (station_id, state["team_id"], state["team_id"]),
                     )
+                # Clear every team's result at this station, even if it is idle
+                # or its state row is missing. Never clear other stations here.
+                cur.execute("DELETE FROM results WHERE station_id = %s", (station_id,))
+                deleted_results = cur.rowcount
                 cur.execute(
                     """INSERT INTO station_state (station_id) VALUES (%s)
                        ON CONFLICT (station_id) DO UPDATE SET status = 'idle',
@@ -58,7 +61,8 @@ def reset_database(station_id=None):
                            updated_at = clock_timestamp()""",
                     (station_id,),
                 )
-                message = f"{station_id} unlocked. All results, event history, highscores, and other stations are preserved."
+                message = (f"{station_id} reset to idle; {deleted_results} result(s) deleted for this station. "
+                           "Event history, highscores, and other stations are preserved.")
     print(f"[RESET] {message}", flush=True)
 
 
@@ -72,7 +76,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     mode = parser.add_mutually_exclusive_group(required=True)
     mode.add_argument("--all", action="store_true", help="Delete ALL game results/events and set every station idle; keep teams/stations.")
-    mode.add_argument("--station", metavar="ID", help="Unlock one station; preserve all results and highscores.")
+    mode.add_argument("--station", metavar="ID", help="Set one station idle and delete all its results; preserve other stations, events, and highscores.")
     parser.add_argument("--database", action="store_true", help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     if args.station is not None and not args.station.strip():
@@ -87,7 +91,7 @@ def main(argv=None):
         return 0
 
     selection = ["--station", args.station] if args.station else ["--all"]
-    description = (f"Unlocking {args.station}" if args.station else
+    description = (f"Resetting {args.station} and deleting only its results" if args.station else
                    "Clearing ALL game results/events. Registered teams and stations will be kept.")
     print(f"[RESET] {description}", flush=True)
     stopped = False

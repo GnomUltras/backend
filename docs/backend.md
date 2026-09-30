@@ -68,8 +68,9 @@ for the new station states.
 | `team` | Unique, non-null primary key `id` for the scanned chip (e.g. `74 FA CB 01`) and unique, non-null `name` (e.g. `Team-01`). |
 | `station` | String primary key `station_id` such as `station_2`, game `name`, and positive integer `routing_order`. |
 | `station_state` | One live row per station: `status`, `team_id`, and `updated_at`. Idle stations have no team. No round or review-score column. |
-| `results` | Current game only, keyed by `(team_id, station_id)`: start/completion times, review, and action. Deleted for that team when its whole game finishes. |
+| `results` | Current game only, keyed by `(team_id, station_id)`: start/completion times, review, and action. Kept until that team's next accepted login after finishing all stations. |
 | `high_score` | One row per station: winning `team_name` and fastest `time` as an `INTERVAL`; both null before any completion. Survives game resets. |
+| `high_score_team` | One row per `(team_name, round)` with total station playing time as an `INTERVAL`. Keeps completed games across resets and tag reuse. |
 | `station_events` | Event history for Grafana: timestamp, station username (e.g. `station_2`), team name, `round`, event type, and optional review score. Existing rows are preserved. |
 
 ### Table relationships
@@ -113,6 +114,11 @@ erDiagram
         varchar station_id PK, FK
         varchar team_name "Winning team name"
         interval time "Fastest playing duration"
+    }
+    high_score_team {
+        varchar team_name PK "Historical game team ID"
+        integer round PK
+        interval time "Sum of station playing durations"
     }
     station_events {
         integer id PK
@@ -254,6 +260,46 @@ On accepted `complete`, the controller computes `completed_at - started_at` and
 atomically updates the station record only if it is faster. Equal times keep
 the existing winner. This write commits with the result, live state, and event;
 a database error cannot leave a partial highscore update.
+
+`high_score_team` records each completed game's total, calculated as
+`SUM(completed_at - started_at)` across all configured stations. Walking, waiting,
+and review time are excluded. `team_name` is the game team ID (e.g. `Team-01`),
+not the NFC UID, and `round` identifies that team's game. Both score tables keep
+historical team names even if registrations later change.
+
+The team score is saved with the final handoff's idle transition and
+`round_complete` event in one transaction. No team score is written for a partial
+game. The `(team_name, round)` primary key makes retries idempotent. Live results
+remain visible until the next accepted login; clearing them never removes scores.
+After a full reset clears events, preserved team scores prevent reuse of their
+round numbers. A team with no saved scores starts at 1.
+
+Migration `0011_high_score_team` creates the team table; `0012_team_score_constraints`
+widens names to 255 characters, requires non-null/non-negative durations and
+positive rounds, and indexes total time. It backfills finished games only when
+all current results are still available and the latest event marks completion.
+Previously cleared results cannot be recovered by that backfill.
+
+For Grafana or the database viewer:
+
+```sql
+-- Fastest game runs across teams (a team may appear for several rounds).
+SELECT team_name AS team_id, "round", time,
+       EXTRACT(EPOCH FROM time) AS total_seconds
+FROM high_score_team
+ORDER BY time, team_name, "round";
+
+-- Fastest game for each team.
+SELECT DISTINCT ON (team_name) team_name AS team_id, "round", time
+FROM high_score_team
+ORDER BY team_name, time, "round";
+```
+
+If the table is missing in a viewer, refresh the `public` schema and verify that
+you are connected to the same database as the controller. Check
+`SELECT version_num FROM alembic_version;`: the table first appears at `0011`.
+Run the deployment migration commands below to apply new revisions; restarting
+only the controller does not run Alembic.
 
 Review scores remain on `station_events` entries with `event_type = 'review'`.
 Historical playing times can be reconstructed from start/complete timestamps,
@@ -525,8 +571,9 @@ This permits retrying the station in the same game. Other stations are untouched
 history; a missing state row is recreated. Unknown station IDs fail without edits.
 
 Run `python gameClient/resetGame.py --all` to delete **all results and events**, reset event
-numbering, and recreate idle states from the station catalog. Every team starts
-again at event round 1. Highscores, team registrations, station catalog/routing order, schema,
+numbering, and recreate idle states from the station catalog. Teams start at an
+event round after their highest saved team score (or 1 if none). Highscores,
+team registrations, station catalog/routing order, schema,
 and Grafana settings stay intact; this is a game reset, not a database-volume deletion.
 
 Pause station clients and auto-play before running either command. The script

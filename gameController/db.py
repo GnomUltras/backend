@@ -17,6 +17,7 @@ def init_db():
                 cur.execute('SELECT started_at, completed_at FROM results LIMIT 0')
                 cur.execute('SELECT status FROM station_state LIMIT 0')
                 cur.execute('SELECT station_id, team_name, time FROM high_score LIMIT 0')
+                cur.execute('SELECT team_name, time, "round" FROM high_score_team LIMIT 0')
                 cur.execute('SELECT "round" FROM station_events LIMIT 0')
                 cur.execute('SELECT id, name FROM team LIMIT 0')
                 cur.execute('SELECT station_id, name, routing_order FROM station LIMIT 0')
@@ -127,12 +128,17 @@ def get_team_station(cur, team_id):
 
 
 def get_latest_team_event(cur, team_id):
-    """Read event-only game numbering; live tables have no round column."""
+    """Read game numbering, including scores preserved by a full game reset."""
     cur.execute(
         'SELECT "round", event_type FROM station_events WHERE team_id = %s '
         'ORDER BY "round" DESC, id DESC LIMIT 1', (team_id,),
     )
-    return cur.fetchone()
+    event = cur.fetchone()
+    cur.execute('SELECT MAX("round") AS "round" FROM high_score_team WHERE team_name = %s', (team_id,))
+    saved_round = cur.fetchone()["round"]
+    if saved_round is not None and (event is None or saved_round >= event["round"]):
+        return {"round": saved_round, "event_type": "round_complete"}
+    return event
 
 
 def get_reviewed_stations(cur, team_id):
@@ -157,6 +163,26 @@ def save_high_score(cur, station_id, team_id, duration):
                team_name = EXCLUDED.team_name, time = EXCLUDED.time
            WHERE high_score.time IS NULL OR EXCLUDED.time < high_score.time""",
         (station_id, team_id, duration),
+    )
+
+
+def save_team_high_score(cur, team_id, round_number):
+    """Save total playing time once for a fully reviewed game, excluding breaks."""
+    cur.execute(
+        """SELECT COUNT(*) AS stations,
+                  COUNT(*) FILTER (WHERE r.status = 'review' AND r.started_at IS NOT NULL
+                                   AND r.completed_at IS NOT NULL) AS finished,
+                  SUM(r.completed_at - r.started_at) AS total
+           FROM station s LEFT JOIN results r
+             ON r.station_id = s.station_id AND r.team_id = %s""", (team_id,),
+    )
+    totals = cur.fetchone()
+    if not totals["stations"] or totals["stations"] != totals["finished"]:
+        raise psycopg2.IntegrityError("Cannot score a team without timed, reviewed results for every station.")
+    cur.execute(
+        '''INSERT INTO high_score_team (team_name, "round", time) VALUES (%s, %s, %s)
+           ON CONFLICT (team_name, "round") DO NOTHING''',
+        (team_id, round_number, totals["total"]),
     )
 
 

@@ -194,7 +194,9 @@ complete each station once per game. After the final review handoff, its final
 station becomes idle, but all results remain visible. When the same team next
 logs into a free station, the backend clears that team's previous results and
 starts a fresh game in the same transaction. Rejected logins do not clear results.
-Events and station highscores remain saved.
+Events, station highscores, and team totals remain saved. Each completed game
+gets a `high_score_team` row with the team name, round, and sum of all station
+playing times (excluding walking, waiting, and reviews).
 
 ## 4. Automatic next station
 
@@ -427,7 +429,7 @@ Run these on the PC/Pi hosting the Docker stack, from this repository (use
 # Unlock one station and remove its current result; preserve events/highscores.
 python gameClient/resetGame.py --station station_3
 
-# Delete ALL game results/events and return every station to idle, starting round 1.
+# Delete ALL game results/events and return every station to idle; preserve highscores.
 python gameClient/resetGame.py --all
 ```
 

@@ -150,6 +150,7 @@ def change_station_state(station_id, team_id, action, review_score=None, expecte
         db.log_event(cur, station_id, team_id, action, score, timestamp, round_number)
         if action == "idle" and set(configured_station_ids(cur)).issubset(db.get_reviewed_stations(cur, team_id)):
             # Record completion now; the next accepted login clears the results.
+            db.save_team_high_score(cur, team_id, round_number)
             db.log_event(cur, station_id, team_id, "round_complete", None, timestamp, round_number)
     # The transaction has committed before an MQTT handler can send a reply.
     print(f"[DB] {action}: {team_id} at {station_id}, round {round_number}", flush=True)

@@ -34,7 +34,7 @@ def reset_database(station_id=None):
                 cur.execute("TRUNCATE results, station_events RESTART IDENTITY")
                 cur.execute("DELETE FROM station_state")
                 cur.execute("INSERT INTO station_state (station_id) SELECT station_id FROM station")
-                message = "All game results/events cleared; every station is idle. Teams start again at round 1."
+                message = "All game results/events cleared; every station is idle. Saved highscores and their round numbers are preserved."
             else:
                 cur.execute("SELECT station_id FROM station WHERE station_id = %s", (station_id,))
                 if cur.fetchone() is None:

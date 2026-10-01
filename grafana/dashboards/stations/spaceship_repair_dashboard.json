@@ -419,13 +419,7 @@
       "maxPerRow": 6,
       "options": {
         "cellHeight": "sm",
-        "showHeader": true,
-        "sortBy": [
-          {
-            "desc": false,
-            "displayName": "Time"
-          }
-        ]
+        "showHeader": true
       },
       "pluginVersion": "12.2.0",
       "repeat": "team",
@@ -439,7 +433,7 @@
           "editorMode": "code",
           "format": "table",
           "rawQuery": true,
-          "rawSql": "WITH rep AS (\n  SELECT station_id,\n         MIN(EXTRACT(EPOCH FROM (completed_at - started_at))) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL\n    AND team_id = '${team:raw}'\n  GROUP BY station_id)\nSELECT s.name AS \"Station\",\n       CASE WHEN r.secs IS NULL THEN 0 ELSE 1 END AS \"Done\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
+          "rawSql": "WITH rep AS (\n  SELECT station_id,\n         EXTRACT(EPOCH FROM (completed_at - started_at)) AS secs\n  FROM results\n  WHERE started_at IS NOT NULL AND completed_at IS NOT NULL\n    AND team_id = '${team:raw}')\nSELECT s.name AS \"Station\",\n       CASE WHEN r.secs IS NULL THEN 0 ELSE 1 END AS \"Done\",\n       COALESCE(lpad(floor(r.secs/60)::int::text,2,'0') || ':' || lpad((floor(r.secs)::int % 60)::text,2,'0'), '–') AS \"Time\"\nFROM station s LEFT JOIN rep r ON r.station_id = s.station_id\nORDER BY s.routing_order",
           "refId": "A",
           "sql": {
             "columns": [
